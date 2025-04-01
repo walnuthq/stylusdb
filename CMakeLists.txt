@@ -22,6 +22,7 @@ include_directories(/usr/lib/llvm-19/include)
 include_directories(/opt/homebrew/opt/llvm@19/include)
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${CMAKE_BINARY_DIR})
+include_directories(${LLVM_SRC}/lldb/include/)
 
 llvm_map_components_to_libnames(llvm_libs
   Support
