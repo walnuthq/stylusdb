@@ -4,6 +4,9 @@ add_library(FunctionCallTrace STATIC
 
 target_link_libraries(FunctionCallTrace PRIVATE ${llvm_libs} ${LLDB_LIBRARY})
 
+message("-- Using LLVM source from ${LLVM_SRC}")
+include_directories(${LLVM_SRC}/lldb/include/)
+
 set_target_properties(FunctionCallTrace PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
