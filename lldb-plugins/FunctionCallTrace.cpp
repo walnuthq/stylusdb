@@ -44,16 +44,28 @@
 // -----------------------------------------------------------------------------
 // Data structures to hold trace info.
 
+// -----------------------------------------------------------------------------
+
 struct CallRecord {
   std::string function;
   std::string file;
   uint32_t line;
+  size_t call_id;        // Unique ID for this call
+  size_t parent_call_id; // ID of parent call (0 for root)
   // For each argument: (name, value)
   std::vector<std::pair<std::string, std::string>> args;
 };
 
+// Thread-local call stack to track hierarchy
+struct ThreadCallStack {
+  std::vector<size_t> stack;
+  size_t next_call_id = 1; // Start with 1 (0 means no parent)
+};
+
 static std::mutex g_trace_mutex;
 static std::vector<CallRecord> g_trace_data;
+// Use thread-specific storage for call stacks
+static thread_local ThreadCallStack g_thread_call_stack;
 
 static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
                                   lldb::SBThread &thread,
@@ -81,7 +93,7 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
     }
   }
 
-  // Gather arguments (works best with -O0 debug builds)
+  // Gather arguments
   std::vector<std::pair<std::string, std::string>> arg_list;
   {
     lldb::SBValueList args = frame.GetVariables(/*arguments*/ true,
@@ -94,33 +106,80 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
       if (!arg.IsValid())
         continue;
 
-      const char *name = arg.GetName(); // arg name
-      const char *val =
-          arg.GetValue(); // arg value (may be nullptr if not available)
+      const char *name = arg.GetName();
+      const char *val = arg.GetValue();
 
       arg_list.push_back(
           {(name ? name : "<anon>"), (val ? val : "<unavailable>")});
     }
   }
 
-  // Store record
+  // Determine parent call ID
+  size_t parent_id = 0;
+  if (!g_thread_call_stack.stack.empty()) {
+    parent_id = g_thread_call_stack.stack.back();
+  }
+
+  // Create and store record
   CallRecord rec;
   rec.function = std::move(fn);
   rec.file = std::move(file_name);
   rec.line = line_no;
   rec.args = std::move(arg_list);
+  rec.parent_call_id = parent_id;
+  rec.call_id = g_thread_call_stack.next_call_id++;
 
+  // Push this call onto the thread's stack FIRST
+  g_thread_call_stack.stack.push_back(rec.call_id);
+
+  // Then store the record
   {
     std::lock_guard<std::mutex> lock(g_trace_mutex);
     g_trace_data.push_back(std::move(rec));
   }
 
-  // Return false => automatically continue execution (do not pause).
+  // We need to set another breakpoint for when this function returns
+  // to properly track the call stack
+  lldb::SBFrame return_frame = thread.GetFrameAtIndex(1);
+  if (return_frame.IsValid()) {
+    // Get the return address properly
+    lldb::SBAddress return_address;
+    {
+      lldb::addr_t pc = return_frame.GetPC();
+      return_address =
+          return_frame.GetSymbolContext(lldb::eSymbolContextEverything)
+              .GetSymbol()
+              .GetStartAddress();
+      if (!return_address.IsValid()) {
+        // Fallback if symbol lookup fails
+        lldb::SBTarget target = process.GetTarget();
+        return_address = target.ResolveLoadAddress(pc);
+      }
+    }
+
+    if (return_address.IsValid()) {
+      lldb::SBTarget target = process.GetTarget();
+      lldb::SBBreakpoint return_bp = target.BreakpointCreateByAddress(
+          return_address.GetLoadAddress(target));
+      return_bp.SetOneShot(true);
+      return_bp.SetThreadID(thread.GetThreadID());
+      return_bp.SetCallback(
+          [](void *baton, lldb::SBProcess &proc, lldb::SBThread &thread,
+             lldb::SBBreakpointLocation &loc) {
+            // Pop the call stack when the function returns
+            if (!g_thread_call_stack.stack.empty()) {
+              g_thread_call_stack.stack.pop_back();
+            }
+            return false;
+          },
+          nullptr);
+    }
+  }
+
   return false;
 }
-
 // -----------------------------------------------------------------------------
-// Helper: print all records as naive JSON to an SBCommandReturnObject.
+// Updated JSON printing to include call hierarchy
 
 static void PrintJSON(lldb::SBCommandReturnObject &result) {
   std::lock_guard<std::mutex> lock(g_trace_mutex);
@@ -129,11 +188,12 @@ static void PrintJSON(lldb::SBCommandReturnObject &result) {
   for (size_t i = 0; i < g_trace_data.size(); ++i) {
     const auto &r = g_trace_data[i];
     result.Printf("  {\n");
+    result.Printf("    \"call_id\": %zu,\n", r.call_id);
+    result.Printf("    \"parent_call_id\": %zu,\n", r.parent_call_id);
     result.Printf("    \"function\": \"%s\",\n", r.function.c_str());
     result.Printf("    \"file\": \"%s\",\n", r.file.c_str());
     result.Printf("    \"line\": %u,\n", r.line);
 
-    // Print arguments as an array
     result.Printf("    \"args\": [\n");
     for (size_t j = 0; j < r.args.size(); ++j) {
       const auto &arg = r.args[j];
@@ -168,6 +228,8 @@ static void WriteJSONToFile(const char *path) {
   for (size_t i = 0; i < g_trace_data.size(); ++i) {
     const auto &r = g_trace_data[i];
     std::fprintf(fp, "  {\n");
+    std::fprintf(fp, "    \"call_id\": %zu,\n", r.call_id);
+    std::fprintf(fp, "    \"parent_call_id\": %zu,\n", r.parent_call_id);
     std::fprintf(fp, "    \"function\": \"%s\",\n", r.function.c_str());
     std::fprintf(fp, "    \"file\": \"%s\",\n", r.file.c_str());
     std::fprintf(fp, "    \"line\": %u,\n", r.line);
@@ -193,9 +255,8 @@ static void WriteJSONToFile(const char *path) {
 
 // -----------------------------------------------------------------------------
 // Subcommand "calltrace start [regex]"
-bool CallTraceStartCommand::DoExecute(
-    lldb::SBDebugger debugger, char **command,
-    lldb::SBCommandReturnObject &result) {
+bool CallTraceStartCommand::DoExecute(lldb::SBDebugger debugger, char **command,
+                                      lldb::SBCommandReturnObject &result) {
   std::string regex = ".*"; // default
   if (command && command[0])
     regex = command[0];
@@ -234,9 +295,8 @@ bool CallTraceStartCommand::DoExecute(
 
 // -----------------------------------------------------------------------------
 // Subcommand "calltrace stop" – prints JSON & writes file
-bool CallTraceStopCommand::DoExecute(
-    lldb::SBDebugger debugger, char **command,
-    lldb::SBCommandReturnObject &result) {
+bool CallTraceStopCommand::DoExecute(lldb::SBDebugger debugger, char **command,
+                                     lldb::SBCommandReturnObject &result) {
   result.Printf("\n--- LLDB Function Trace (JSON) ---\n");
   PrintJSON(result);
   result.Printf("----------------------------------\n");
@@ -254,8 +314,8 @@ bool CallTraceStopCommand::DoExecute(
 
 bool RegisterWalnutCommands(lldb::SBCommandInterpreter &interpreter) {
   // Create multiword command: "calltrace"
-  lldb::SBCommand calltrace_cmd =
-      interpreter.AddMultiwordCommand("calltrace", "Function call tracing commands");
+  lldb::SBCommand calltrace_cmd = interpreter.AddMultiwordCommand(
+      "calltrace", "Function call tracing commands");
   if (!calltrace_cmd.IsValid()) {
     std::fprintf(stderr, "Failed to create multiword command 'calltrace'\n");
     return false;

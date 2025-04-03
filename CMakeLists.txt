@@ -92,6 +92,11 @@ if (APPLE)
                 "${LLVM_BUILD_ROOT}/bin/lldb-argdumper"
                 "/usr/local/bin/"
 
+        # 5) Copy pretty-print
+        COMMAND "${CMAKE_COMMAND}" -E copy
+                "${CMAKE_SOURCE_DIR}/scripts/pretty_trace.py"
+                "/usr/local/bin/pretty-print-trace"
+
         COMMENT "Copying LLDB, LLVM, Clang libraries, and LLDB_ARG_DUMPER_EXE"
         VERBATIM
     )

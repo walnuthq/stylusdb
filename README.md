@@ -57,3 +57,12 @@ TODO
 $ /usr/local/bin/walnut-dbg
 (walnut-dbg) q
 ```
+
+### Pretty print
+
+```
+$ python3 -m venv myvenv
+$ source ./myvenv/bin/activate
+(myvenv) $ pip3 install colorama
+(myvenv) $ /usr/local/bin/pretty-print-trace /tmp/lldb_function_trace.json
+```
