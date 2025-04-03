@@ -49,7 +49,35 @@ NOTE: Replace `/path/to/llvm-project-llvmorg-19.1.7/build_lldb` with real path!
 
 ### Linux
 
-TODO
+#### Ubuntu
+
+Clone the github repo as follows:
+
+```bash
+git clone https://github.com/walnuthq/walnut-dbg.git
+cd walnut-dbg
+```
+
+Install build dependencies:
+
+```bash
+sudo apt install cmake ninja-build
+```
+
+Install llvm and lldb:
+
+```bash
+sudo apt install llvm-19 llvm-19-dev
+```
+
+Configure, build and install the executable:
+
+```bash
+mkdir build && cd build
+cmake .. -G Ninja
+ninja
+sudo ninja install
+```
 
 ## Run the tool
 
