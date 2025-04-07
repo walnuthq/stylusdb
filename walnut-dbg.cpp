@@ -100,6 +100,7 @@ Driver::Driver()
   // We want to be able to handle CTRL+D in the terminal to have it terminate
   // certain input
   m_debugger.SetCloseInputOnEOF(false);
+  m_debugger.SetScriptLanguage(lldb::eScriptLanguagePython);
   g_driver = this;
 }
 

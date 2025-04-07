@@ -32,6 +32,8 @@ llvm_map_components_to_libnames(llvm_libs
 
 if (APPLE)
   set(CMAKE_MACOSX_RPATH ON)
+  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+  set(CMAKE_INSTALL_RPATH "/usr/local/lib")
 endif()
 
 add_subdirectory(lldb-plugins)
@@ -74,7 +76,15 @@ add_custom_target(copy_pretty_trace ALL
     COMMENT "Copying pretty_trace.py to /usr/local/bin/pretty-print-trace"
 )
 
+add_custom_target(copy_walnut_dbg_sh ALL
+    COMMAND "${CMAKE_COMMAND}" -E copy
+            "${CMAKE_SOURCE_DIR}/rust-walnut-dbg.sh"
+            "/usr/local/bin/rust-walnut-dbg"
+    COMMENT "Copying rust-walnut-dbg.sh to /usr/local/bin/rust-walnut-dbg"
+)
+
 install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} --build . --target copy_pretty_trace)")
+install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} --build . --target copy_walnut_dbg_sh)")
 
 if (APPLE)
     add_custom_command(
@@ -103,5 +113,15 @@ if (APPLE)
 
         COMMENT "Copying LLDB, LLVM, Clang libraries, and LLDB_ARG_DUMPER_EXE"
         VERBATIM
+    )
+endif()
+
+if (APPLE)
+    install(
+      DIRECTORY
+        "${LLVM_BUILD_ROOT}/lib/python3.13/site-packages/lldb"
+      DESTINATION
+        "/usr/local/lib/python3.13/site-packages"
+      COMPONENT lldb-python
     )
 endif()

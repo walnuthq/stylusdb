@@ -20,6 +20,7 @@ Download LLVM package with `brew`:
 ```
 $ brew install llvm@19
 $ brew install lit
+$ brew install swig
 ```
 
 First of all, in case of MacOS, we need to download and build LLDB from source (on Linux we do not need this part, since there is `lldb-dev` package available).
@@ -28,7 +29,7 @@ First of all, in case of MacOS, we need to download and build LLDB from source (
 $ wget https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-19.1.7.zip
 $ unzip llvmorg-19.1.7.zip
 $ cd llvm-project-llvmorg-19.1.7/ && mkdir build_lldb && cd build_lldb
-$ cmake ../llvm -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lldb" -DLLVM_ENABLE_ASSERTIONS=ON -DLLDB_INCLUDE_TESTS=OFF -GNinja
+$ cmake ../llvm -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lldb" -DLLVM_ENABLE_ASSERTIONS=ON -DLLDB_INCLUDE_TESTS=OFF -DLLDB_ENABLE_PYTHON=1 -GNinja
 $ ninja
 ```
 
