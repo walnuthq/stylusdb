@@ -37,7 +37,7 @@ Build `walnut-dbg`:
 ```
 $ cd /path/to/walnut-dbg
 $ mkdir build && cd build
-$ cmake -GNinja .. -DLLVM_DIR=/opt/homebrew/opt/llvm@19/lib/cmake/llvm -DLLVM_BUILD_ROOT=/path/to/llvm-project-llvmorg-19.1.7/build_lldb -DLLVM_TABLEGEN_EXE=/opt/homebrew/opt/llvm@19/bin/llvm-tblgen -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" -DLLVM_LIB_PATH=/opt/homebrew/opt/llvm@19/lib/libLLVM.dylib
+$ cmake -GNinja .. -DLLVM_DIR=/opt/homebrew/opt/llvm@19/lib/cmake/llvm -DLLVM_BUILD_ROOT=/path/to/llvm-project-llvmorg-19.1.7/build_lldb -DLLVM_SRC=/path/to/llvm-project-llvmorg-19.1.7/ -DLLVM_TABLEGEN_EXE=/opt/homebrew/opt/llvm@19/bin/llvm-tblgen -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" -DLLVM_LIB_PATH=/opt/homebrew/opt/llvm@19/lib/libLLVM.dylib
 $ sudo ninja && sudo ninja install
 [0/1] Install the project...
 -- Installing: /usr/local/lib/libFunctionCallTrace.a
@@ -84,4 +84,13 @@ sudo ninja install
 ```
 $ /usr/local/bin/walnut-dbg
 (walnut-dbg) q
+```
+
+### Pretty print
+
+```
+$ python3 -m venv myvenv
+$ source ./myvenv/bin/activate
+(myvenv) $ pip3 install colorama
+(myvenv) $ /usr/local/bin/pretty-print-trace /tmp/lldb_function_trace.json
 ```

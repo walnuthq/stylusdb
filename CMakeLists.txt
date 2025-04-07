@@ -31,6 +31,8 @@ include_directories(/usr/lib/llvm-19/include)
 include_directories(/opt/homebrew/opt/llvm@19/include)
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${CMAKE_BINARY_DIR})
+include_directories(${LLVM_SRC}/lldb/include/)
+include_directories(${LLVM_BUILD_ROOT}/tools/lldb/include/)
 
 llvm_map_components_to_libnames(llvm_libs
   Support
@@ -98,6 +100,11 @@ if (APPLE)
         COMMAND "${CMAKE_COMMAND}" -E copy
                 "${LLVM_BUILD_ROOT}/bin/lldb-argdumper"
                 "/usr/local/bin/"
+
+        # 5) Copy pretty-print
+        COMMAND "${CMAKE_COMMAND}" -E copy
+                "${CMAKE_SOURCE_DIR}/scripts/pretty_trace.py"
+                "/usr/local/bin/pretty-print-trace"
 
         COMMENT "Copying LLDB, LLVM, Clang libraries, and LLDB_ARG_DUMPER_EXE"
         VERBATIM
