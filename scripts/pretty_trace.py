@@ -38,9 +38,9 @@ def print_call_node(call, tree, level=0, is_last=False, prefix=""):
     Recursively prints a call and its children with proper indentation.
     """
     # Tree visualization
-    indent = "    " * level
-    branch = "└── " if is_last else "├── "
-    new_prefix = "    " if is_last else "│   "
+    indent = " " * level
+    branch = "└─ " if is_last else "├─ "
+    new_prefix = " " if is_last else "│ "
     
     function_name = call.get("function", "<unknown function>")
     file_name = call.get("file", "<no file>")

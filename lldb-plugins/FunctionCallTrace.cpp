@@ -35,7 +35,9 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -178,6 +180,52 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
 
   return false;
 }
+
+//
+// Escape a string for safe inclusion in JSON.
+//
+static std::string JsonEscape(const std::string &s) {
+  std::ostringstream oss;
+  oss << std::hex; // make sure we print hex for \u00xx
+
+  for (char c : s) {
+    switch (c) {
+    case '\\':
+      oss << "\\\\";
+      break;
+    case '"':
+      oss << "\\\"";
+      break;
+    case '\b':
+      oss << "\\b";
+      break;
+    case '\f':
+      oss << "\\f";
+      break;
+    case '\n':
+      oss << "\\n";
+      break;
+    case '\r':
+      oss << "\\r";
+      break;
+    case '\t':
+      oss << "\\t";
+      break;
+    default:
+      // If outside normal printable range, emit \u00XX
+      if ((unsigned char)c < 0x20 || (unsigned char)c > 0x7E) {
+        oss << "\\u" << std::setw(4) << std::setfill('0')
+            << (static_cast<unsigned int>((unsigned char)c) & 0xFF);
+      } else {
+        oss << c;
+      }
+      break;
+    }
+  }
+
+  return oss.str();
+}
+
 // -----------------------------------------------------------------------------
 // Updated JSON printing to include call hierarchy
 
@@ -187,18 +235,24 @@ static void PrintJSON(lldb::SBCommandReturnObject &result) {
   result.Printf("[\n");
   for (size_t i = 0; i < g_trace_data.size(); ++i) {
     const auto &r = g_trace_data[i];
+    std::string esc_func = JsonEscape(r.function);
+    std::string esc_file = JsonEscape(r.file);
+
     result.Printf("  {\n");
     result.Printf("    \"call_id\": %zu,\n", r.call_id);
     result.Printf("    \"parent_call_id\": %zu,\n", r.parent_call_id);
-    result.Printf("    \"function\": \"%s\",\n", r.function.c_str());
-    result.Printf("    \"file\": \"%s\",\n", r.file.c_str());
+    result.Printf("    \"function\": \"%s\",\n", esc_func.c_str());
+    result.Printf("    \"file\": \"%s\",\n", esc_file.c_str());
     result.Printf("    \"line\": %u,\n", r.line);
 
     result.Printf("    \"args\": [\n");
     for (size_t j = 0; j < r.args.size(); ++j) {
       const auto &arg = r.args[j];
+      std::string esc_name  = JsonEscape(arg.first);
+      std::string esc_value = JsonEscape(arg.second);
+
       result.Printf("      { \"name\": \"%s\", \"value\": \"%s\" }",
-                    arg.first.c_str(), arg.second.c_str());
+                    esc_name.c_str(), esc_value.c_str());
       if (j + 1 < r.args.size())
         result.Printf(",");
       result.Printf("\n");
@@ -227,18 +281,24 @@ static void WriteJSONToFile(const char *path) {
 
   for (size_t i = 0; i < g_trace_data.size(); ++i) {
     const auto &r = g_trace_data[i];
+    std::string esc_func = JsonEscape(r.function);
+    std::string esc_file = JsonEscape(r.file);
+
     std::fprintf(fp, "  {\n");
     std::fprintf(fp, "    \"call_id\": %zu,\n", r.call_id);
     std::fprintf(fp, "    \"parent_call_id\": %zu,\n", r.parent_call_id);
-    std::fprintf(fp, "    \"function\": \"%s\",\n", r.function.c_str());
-    std::fprintf(fp, "    \"file\": \"%s\",\n", r.file.c_str());
+    std::fprintf(fp, "    \"function\": \"%s\",\n", esc_func.c_str());
+    std::fprintf(fp, "    \"file\": \"%s\",\n", esc_file.c_str());
     std::fprintf(fp, "    \"line\": %u,\n", r.line);
 
     std::fprintf(fp, "    \"args\": [\n");
     for (size_t j = 0; j < r.args.size(); ++j) {
       const auto &arg = r.args[j];
+      std::string esc_name  = JsonEscape(arg.first);
+      std::string esc_value = JsonEscape(arg.second);
+
       std::fprintf(fp, "      { \"name\": \"%s\", \"value\": \"%s\" }",
-                   arg.first.c_str(), arg.second.c_str());
+                   esc_name.c_str(), esc_value.c_str());
       if (j + 1 < r.args.size())
         std::fprintf(fp, ",");
       std::fprintf(fp, "\n");

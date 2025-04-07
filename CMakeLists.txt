@@ -67,6 +67,15 @@ install(TARGETS walnut-dbg
   RUNTIME DESTINATION bin
 )
 
+add_custom_target(copy_pretty_trace ALL
+    COMMAND "${CMAKE_COMMAND}" -E copy
+            "${CMAKE_SOURCE_DIR}/scripts/pretty_trace.py"
+            "/usr/local/bin/pretty-print-trace"
+    COMMENT "Copying pretty_trace.py to /usr/local/bin/pretty-print-trace"
+)
+
+install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} --build . --target copy_pretty_trace)")
+
 if (APPLE)
     add_custom_command(
         TARGET walnut-dbg
@@ -91,11 +100,6 @@ if (APPLE)
         COMMAND "${CMAKE_COMMAND}" -E copy
                 "${LLVM_BUILD_ROOT}/bin/lldb-argdumper"
                 "/usr/local/bin/"
-
-        # 5) Copy pretty-print
-        COMMAND "${CMAKE_COMMAND}" -E copy
-                "${CMAKE_SOURCE_DIR}/scripts/pretty_trace.py"
-                "/usr/local/bin/pretty-print-trace"
 
         COMMENT "Copying LLDB, LLVM, Clang libraries, and LLDB_ARG_DUMPER_EXE"
         VERBATIM
