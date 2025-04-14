@@ -69,6 +69,54 @@ static std::vector<CallRecord> g_trace_data;
 // Use thread-specific storage for call stacks
 static thread_local ThreadCallStack g_thread_call_stack;
 
+// -----------------------------------------------------------------------------
+// Helper: Recursively format an SBValue (structs, arrays, etc.) as a string.
+
+static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
+  if (!val.IsValid()) {
+    return "<invalid>";
+  }
+
+  if (const char *raw_val = val.GetValue()) {
+    // Sometimes for complex types, raw_val = "<unavailable>" or nullptr
+    if (std::strcmp(raw_val, "<unavailable>") != 0) {
+      // If it's not literally "<unavailable>", we can return it
+      return std::string(raw_val);
+    }
+  }
+
+  if (const char *summary = val.GetSummary()) {
+    // Summaries can be empty or something like "..." for incomplete data
+    if (summary[0] != '\0' && std::strcmp(summary, "<unavailable>") != 0) {
+      return std::string(summary);
+    }
+  }
+
+  // If we have children, build a string from them
+  uint32_t num_children = val.GetNumChildren();
+  if (num_children > 0) {
+    // Collect child fields in JSON-ish format
+    std::ostringstream oss;
+    oss << val.GetTypeName() << " { ";
+    for (uint32_t i = 0; i < num_children; ++i) {
+      lldb::SBValue child = val.GetChildAtIndex(i);
+      if (!child.IsValid()) continue;
+
+      const char *child_name = child.GetName();
+      if (!child_name) child_name = "<anon>";
+      oss << child_name << "=" << FormatValueRecursive(child, depth + 1);
+      if (i + 1 < num_children) {
+        oss << ", ";
+      }
+    }
+    oss << " }";
+    return oss.str();
+  }
+
+  // We have no value, summary, or children: fallback
+  return "<unavailable>";
+}
+
 static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
                                   lldb::SBThread &thread,
                                   lldb::SBBreakpointLocation &location) {
@@ -95,7 +143,7 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
     }
   }
 
-  // Gather arguments
+  // Gather arguments: enhanced to handle struct/complex types
   std::vector<std::pair<std::string, std::string>> arg_list;
   {
     lldb::SBValueList args = frame.GetVariables(/*arguments*/ true,
@@ -109,10 +157,12 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
         continue;
 
       const char *name = arg.GetName();
-      const char *val = arg.GetValue();
+      std::string val_str = FormatValueRecursive(arg);
 
-      arg_list.push_back(
-          {(name ? name : "<anon>"), (val ? val : "<unavailable>")});
+      arg_list.push_back({
+          (name ? name : "<anon>"),
+          (val_str.empty() ? "<unavailable>" : val_str),
+      });
     }
   }
 
