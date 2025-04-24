@@ -12,6 +12,8 @@
 
 #include "FunctionCallTrace.h"
 
+#include <llvm/ADT/APInt.h>
+#include <llvm/ADT/SmallString.h>
 #include <llvm/Support/WithColor.h>
 #include <llvm/Support/raw_ostream.h>
 
@@ -69,6 +71,79 @@ static std::vector<CallRecord> g_trace_data;
 // Use thread-specific storage for call stacks
 static thread_local ThreadCallStack g_thread_call_stack;
 
+// Decoding functions.
+
+// Try to read a FixedBytes<N> blob and return “0x…” hex.
+static bool ExtractFixedBytesAsHex(lldb::SBValue &val, std::string &out_hex) {
+  const char *cname = val.GetTypeName();
+  if (!cname) return false;
+  std::string type_name(cname);
+
+  constexpr char Prefix[] = "alloy_primitives::bits::fixed::FixedBytes<";
+  if (type_name.rfind(Prefix, 0) != 0)
+    return false;
+
+  auto start = type_name.find('<') + 1;
+  auto end   = type_name.find('>');
+  int byte_len = std::stoi(type_name.substr(start, end - start));
+
+  std::vector<uint8_t> buf(byte_len);
+  lldb::SBError err;
+  size_t read_bytes = val.GetData().ReadRawData(err, 0, buf.data(), buf.size());
+  if (err.Fail() || read_bytes != buf.size())
+    return false;
+
+  std::ostringstream oss;
+  oss << "0x" << std::hex << std::setfill('0');
+  for (uint8_t b : buf)
+    oss << std::setw(2) << (int)b;
+  out_hex = oss.str();
+  return true;
+}
+
+// TODO: Handle I256 as well.
+// Try to read a ruint::Uint<BITS,NLIMBS> and return its full decimal value.
+static bool ExtractRuintAsDecimal(lldb::SBValue &val, std::string &out_dec) {
+  // Get and wrap the C‑string type name
+  const char *cname = val.GetTypeName();
+  if (!cname)
+    return false;
+  std::string type_name(cname);
+
+  // Quick‑check prefix
+  constexpr char Prefix[] = "ruint::Uint<";
+  if (type_name.rfind(Prefix, 0) != 0)
+    return false;
+
+  // Parse BITS and NLIMBS from "ruint::Uint<BITS, NLIMBS>"
+  auto lt    = type_name.find('<') + 1;
+  auto comma = type_name.find(',', lt);
+  auto gt    = type_name.find('>', comma);
+  int bits    = std::stoi(type_name.substr(lt, comma - lt));
+  int limbsN  = std::stoi(type_name.substr(comma + 1, gt - comma - 1));
+
+  // Fetch the "limbs" field
+  lldb::SBValue limbs = val.GetChildMemberWithName("limbs");
+  if (!limbs.IsValid() || (int)limbs.GetNumChildren() != limbsN)
+    return false;
+
+  // Build an APInt of width ‘bits’
+  llvm::APInt api(bits, 0);
+  for (int i = 0; i < limbsN; ++i) {
+    lldb::SBValue elem = limbs.GetChildAtIndex(i);
+    uint64_t limb = elem.GetValueAsUnsigned(0);
+    llvm::APInt part(64, limb);
+    api |= part.zext(bits).shl(64ull * i);
+  }
+
+  // Convert to decimal
+  llvm::SmallString<128> buffer;
+  api.toString(buffer, /*Radix=*/10, /*Signed=*/false);
+  out_dec = buffer.c_str();
+
+  return true;
+}
+
 // -----------------------------------------------------------------------------
 // Helper: Recursively format an SBValue (structs, arrays, etc.) as a string.
 
@@ -76,6 +151,14 @@ static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
   if (!val.IsValid()) {
     return "<invalid>";
   }
+
+  // Try to decode special values related to Contracts.
+  std::string hex;
+  if (ExtractFixedBytesAsHex(val, hex))
+    return hex;
+  std::string dec;
+  if (ExtractRuintAsDecimal(val, dec))
+    return dec;
 
   if (const char *raw_val = val.GetValue()) {
     // Sometimes for complex types, raw_val = "<unavailable>" or nullptr
