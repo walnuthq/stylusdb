@@ -1,5 +1,5 @@
 //
-// walnut-dbg
+// stylusdb
 //
 
 #include "Driver.h"
@@ -466,7 +466,7 @@ int Driver::MainLoop() {
 
   RegisterWalnutCommands(sb_interpreter);
   RegisterWalnutContractCommands(sb_interpreter);
-  m_debugger.SetPrompt("(walnut-dbg) ");
+  m_debugger.SetPrompt("(stylusdb) ");
 
   // We allow the user to specify an exit code when calling quit which we will
   // return when exiting.

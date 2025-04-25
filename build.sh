@@ -7,7 +7,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}=== Walnut-DBG Build Script ===${NC}"
+echo -e "${GREEN}=== StylusDB Build Script ===${NC}"
 
 OS_TYPE=""
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -162,19 +162,19 @@ check_or_download_lldb_source() {
     echo -e "${YELLOW}Checking for pre-built LLDB...${NC}"
     
     # Check for existing LLDB build in the correct location
-    if [ -f "$HOME/.walnut-dbg/${LLDB_DIR}/build_lldb/lib/liblldb.dylib" ]; then
-        echo -e "${GREEN}Found existing LLDB build at $HOME/.walnut-dbg/${LLDB_DIR}${NC}"
-        LLDB_BUILD_DIR="$HOME/.walnut-dbg/${LLDB_DIR}/build_lldb"
-        LLVM_SRC_DIR="$HOME/.walnut-dbg/${LLDB_DIR}"
+    if [ -f "$HOME/.stylusdb/${LLDB_DIR}/build_lldb/lib/liblldb.dylib" ]; then
+        echo -e "${GREEN}Found existing LLDB build at $HOME/.stylusdb/${LLDB_DIR}${NC}"
+        LLDB_BUILD_DIR="$HOME/.stylusdb/${LLDB_DIR}/build_lldb"
+        LLVM_SRC_DIR="$HOME/.stylusdb/${LLDB_DIR}"
         USE_PREBUILT_LLDB=true
         return 0
     fi
     
     # Also check for the renamed directory (in case it was already renamed)
-    if [ -f "$HOME/.walnut-dbg/lldb-${LLDB_VERSION}-macos/build_lldb/lib/liblldb.dylib" ]; then
-        echo -e "${GREEN}Found pre-built LLDB at $HOME/.walnut-dbg/lldb-${LLDB_VERSION}-macos${NC}"
-        LLDB_BUILD_DIR="$HOME/.walnut-dbg/lldb-${LLDB_VERSION}-macos/build_lldb"
-        LLVM_SRC_DIR="$HOME/.walnut-dbg/lldb-${LLDB_VERSION}-macos"
+    if [ -f "$HOME/.stylusdb/lldb-${LLDB_VERSION}-macos/build_lldb/lib/liblldb.dylib" ]; then
+        echo -e "${GREEN}Found pre-built LLDB at $HOME/.stylusdb/lldb-${LLDB_VERSION}-macos${NC}"
+        LLDB_BUILD_DIR="$HOME/.stylusdb/lldb-${LLDB_VERSION}-macos/build_lldb"
+        LLVM_SRC_DIR="$HOME/.stylusdb/lldb-${LLDB_VERSION}-macos"
         USE_PREBUILT_LLDB=true
         return 0
     fi
@@ -189,8 +189,8 @@ check_or_download_lldb_source() {
         exit 1
     fi
     
-    mkdir -p "$HOME/.walnut-dbg"
-    cd "$HOME/.walnut-dbg"
+    mkdir -p "$HOME/.stylusdb"
+    cd "$HOME/.stylusdb"
     
     if [ ! -d "$LLDB_DIR" ]; then
         echo -e "${YELLOW}Downloading LLVM/LLDB ${LLDB_VERSION}...${NC}"
@@ -238,12 +238,12 @@ check_or_download_lldb_source() {
         echo -e "${GREEN}LLDB build complete!${NC}"
     fi
     
-    LLDB_BUILD_DIR="$HOME/.walnut-dbg/${LLDB_DIR}/build_lldb"
-    LLVM_SRC_DIR="$HOME/.walnut-dbg/${LLDB_DIR}"
+    LLDB_BUILD_DIR="$HOME/.stylusdb/${LLDB_DIR}/build_lldb"
+    LLVM_SRC_DIR="$HOME/.stylusdb/${LLDB_DIR}"
 }
 
-build_walnut_dbg() {
-    echo -e "${GREEN}Building walnut-dbg...${NC}"
+build_stylusdb() {
+    echo -e "${GREEN}Building stylusdb...${NC}"
     
     cd "$SCRIPT_DIR"
     
@@ -293,16 +293,16 @@ build_walnut_dbg() {
     echo -e "${YELLOW}To install system-wide, run: cd $BUILD_DIR && sudo ninja install${NC}"
 }
 
-install_walnut_dbg() {
-    echo -n "Install walnut-dbg system-wide? (requires sudo) [Y/n]: "
+install_stylusdb() {
+    echo -n "Install stylusdb system-wide? (requires sudo) [Y/n]: "
     read -r response
     
     if [[ ! "$response" =~ ^[Nn]$ ]]; then
         cd "$BUILD_DIR"
-        echo -e "${YELLOW}Installing walnut-dbg...${NC}"
+        echo -e "${YELLOW}Installing stylusdb...${NC}"
         sudo ninja install
         echo -e "${GREEN}Installation complete!${NC}"
-        echo -e "${GREEN}You can now run: /usr/local/bin/walnut-dbg${NC}"
+        echo -e "${GREEN}You can now run: /usr/local/bin/stylusdb${NC}"
     else
         echo -e "${YELLOW}Skipping installation. Binaries are in: $BUILD_DIR/bin${NC}"
     fi
@@ -319,8 +319,8 @@ main() {
         install_dependencies_linux
     fi
     
-    build_walnut_dbg
-    install_walnut_dbg
+    build_stylusdb
+    install_stylusdb
     
     echo -e "${GREEN}=== Build process complete! ===${NC}"
 }

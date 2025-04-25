@@ -1,5 +1,5 @@
 //
-// walnut-dbg
+// stylusdb
 //
 
 // this file is only relevant for Visual C++

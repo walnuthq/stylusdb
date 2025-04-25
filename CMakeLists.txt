@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(walnut-dbg)
+project(stylusdb)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,21 +38,21 @@ endif()
 
 add_subdirectory(lldb-plugins)
 
-add_executable(walnut-dbg walnut-dbg.cpp Platform.cpp)
+add_executable(stylusdb stylusdb.cpp Platform.cpp)
 
-target_link_libraries(walnut-dbg ${llvm_libs} FunctionCallTrace)
+target_link_libraries(stylusdb ${llvm_libs} FunctionCallTrace)
 
 set(LLVM_TARGET_DEFINITIONS Options.td)
 tablegen(LLVM Options.inc -gen-opt-parser-defs)
 add_public_tablegen_target(LLDBOptionsTableGen)
 
-add_dependencies(walnut-dbg
+add_dependencies(stylusdb
   LLDBOptionsTableGen
   ${tablegen_deps}
 )
 
 if (APPLE)
-set_target_properties(walnut-dbg PROPERTIES
+set_target_properties(stylusdb PROPERTIES
     INSTALL_RPATH "@executable_path/../lib;@loader_path/../lib"
     BUILD_WITH_INSTALL_RPATH TRUE
 )
@@ -60,11 +60,11 @@ endif()
 
 message("-- LLDB LIBRARY IS ${LLDB_LIBRARY}")
 
-set_target_properties(walnut-dbg PROPERTIES
+set_target_properties(stylusdb PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-install(TARGETS walnut-dbg
+install(TARGETS stylusdb
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
@@ -76,19 +76,19 @@ add_custom_target(copy_pretty_trace ALL
     COMMENT "Copying pretty_trace.py to /usr/local/bin/pretty-print-trace"
 )
 
-add_custom_target(copy_walnut_dbg_sh ALL
+add_custom_target(copy_stylusdb_sh ALL
     COMMAND "${CMAKE_COMMAND}" -E copy
-            "${CMAKE_SOURCE_DIR}/rust-walnut-dbg.sh"
-            "/usr/local/bin/rust-walnut-dbg"
-    COMMENT "Copying rust-walnut-dbg.sh to /usr/local/bin/rust-walnut-dbg"
+            "${CMAKE_SOURCE_DIR}/rust-stylusdb.sh"
+            "/usr/local/bin/rust-stylusdb"
+    COMMENT "Copying rust-stylusdb.sh to /usr/local/bin/rust-stylusdb"
 )
 
 install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} --build . --target copy_pretty_trace)")
-install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} --build . --target copy_walnut_dbg_sh)")
+install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} --build . --target copy_stylusdb_sh)")
 
 if (APPLE)
     add_custom_command(
-        TARGET walnut-dbg
+        TARGET stylusdb
         POST_BUILD
 
         # 1) Copy liblldb.19.1.7.dylib

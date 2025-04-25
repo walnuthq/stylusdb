@@ -1,5 +1,5 @@
 //
-// walnut-dbg
+// stylusdb
 //
 
 #ifndef LLDB_TOOLS_DRIVER_DRIVER_H

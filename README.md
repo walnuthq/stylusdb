@@ -1,4 +1,4 @@
-# walnut-dbg
+# stylusdb
 Modern debugger for blockchain transactions.
 
 ## Quick Start
@@ -8,15 +8,15 @@ Modern debugger for blockchain transactions.
 Clone the repository and run the automated build script:
 
 ```bash
-git clone https://github.com/walnuthq/walnut-dbg.git
-cd walnut-dbg
+git clone https://github.com/walnuthq/stylusdb.git
+cd stylusdb
 ./build.sh
 ```
 
 The script will:
 - Install all required dependencies automatically
 - Download and build LLDB if needed (macOS only, cached for future builds)
-- Build walnut-dbg
+- Build stylusdb
 - Optionally install it system-wide
 
 ### Option 2: Download Pre-built Binaries (Easiest)
@@ -53,11 +53,11 @@ cmake ../llvm -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lldb" \
 ninja
 ```
 
-##### Build walnut-dbg
+##### Build stylusdb
 
 ###### macOS
 ```bash
-cd /path/to/walnut-dbg
+cd /path/to/stylusdb
 mkdir build && cd build
 cmake -GNinja .. \
   -DLLVM_DIR=/opt/homebrew/opt/llvm@19/lib/cmake/llvm \
@@ -71,7 +71,7 @@ sudo ninja && sudo ninja install
 
 ###### Linux
 ```bash
-cd /path/to/walnut-dbg
+cd /path/to/stylusdb
 mkdir build && cd build
 cmake -GNinja .. \
   -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm \
@@ -87,15 +87,15 @@ sudo ninja && sudo ninja install
 
 ### Basic Usage
 ```bash
-/usr/local/bin/walnut-dbg
-(walnut-dbg) target create ./my-program
-(walnut-dbg) run
-(walnut-dbg) quit
+/usr/local/bin/stylusdb
+(stylusdb) target create ./my-program
+(stylusdb) run
+(stylusdb) quit
 ```
 
 ### With cargo-stylus
 ```bash
-/usr/local/bin/rust-walnut-dbg ./my-rust-program
+/usr/local/bin/rust-stylusdb ./my-rust-program
 ```
 
 ### Pretty Print Traces

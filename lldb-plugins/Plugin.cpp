@@ -1,5 +1,5 @@
 //
-// walnut-dbg
+// stylusdb
 //
 
 #include "FunctionCallTrace.h"
@@ -30,7 +30,7 @@ namespace lldb {
 
 PLUGIN_API bool PluginInitialize(lldb::SBDebugger debugger) {
   lldb::SBCommandInterpreter interp = debugger.GetCommandInterpreter();
-  debugger.SetPrompt("(walnut-dbg) ");
+  debugger.SetPrompt("(stylusdb) ");
 
   if (!RegisterWalnutCommands(interp)) {
     llvm::WithColor::error() << "Failed to register Walnut commands.\n";

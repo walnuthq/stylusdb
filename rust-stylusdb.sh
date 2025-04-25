@@ -10,7 +10,7 @@ host=$(rustc -vV | sed -n -e 's/^host: //p')
 RUSTC_SYSROOT=$(rustc --print sysroot)
 RUST_LLDB="$RUSTC_SYSROOT/lib/rustlib/$host/bin/lldb"
 
-lldb=walnut-dbg
+lldb=stylusdb
 if [ -f "$RUST_LLDB" ]; then
     lldb="$RUST_LLDB"
 else
