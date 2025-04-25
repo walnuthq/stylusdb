@@ -21,7 +21,48 @@ The script will:
 
 ### Option 2: Download Pre-built Binaries (Easiest)
 
-TODO: Add binaries into repo/releases.
+Download the latest installer from [GitHub Releases](https://github.com/walnuthq/stylusdb/releases):
+
+1. Download the appropriate package for your system:
+   - **Apple Silicon (M1/M2/M3)**: `StylusDB-0.1.0-macOS-aarch64.pkg`
+   - **Intel**: `StylusDB-0.1.0-macOS-x86_64.pkg`
+2. Double-click the package to install
+3. Follow the installation wizard
+
+The package includes:
+- `stylusdb` - Main debugger
+- `rust-stylusdb` - Rust debugging wrapper
+- `pretty-print-trace` - Trace visualization tool
+- All required LLDB/LLVM libraries
+
+After installation, run `/usr/local/bin/stylusdb` to start using the debugger
+
+#### Install the package for all users (requires admin password)
+
+You can also install the package from the terminal:
+```bash
+# Download the package (choose the right one for your architecture)
+# For Apple Silicon (M1/M2/M3):
+curl -L -O https://github.com/walnuthq/stylusdb/releases/download/v0.1.0/StylusDB-0.1.0-macOS-aarch64.pkg
+
+# Or for Intel:
+# curl -L -O https://github.com/walnuthq/stylusdb/releases/download/v0.1.0/StylusDB-0.1.0-macOS-x86_64.pkg
+
+# Install the package (requires admin password)
+sudo installer -pkg StylusDB-0.1.0-macOS-aarch64.pkg -target /
+
+# Verify installation
+/usr/local/bin/stylusdb --version
+```
+
+### Prerequisites for `usertrace`
+
+Install Python colorama for pretty-printed traces:
+```bash
+python3 -m venv myvenv
+source ./myvenv/bin/activate
+pip3 install colorama
+```
 
 ### Option 3: Manual Build
 
@@ -85,25 +126,108 @@ sudo ninja && sudo ninja install
 
 ## Usage
 
-### Basic Usage
+StylusDB is integrated with [cargo-stylus](https://github.com/walnuthq/cargo-stylus) to provide advanced debugging capabilities for Stylus smart contracts on Arbitrum. For complete documentation, see the [Stylus Debugger Guide](https://github.com/walnuthq/cargo-stylus/blob/feature/usertrace/docs/StylusDebugger.md).
+
+### Function Call Tracing with `usertrace`
+
+Trace user function calls in a transaction to understand the execution flow:
+
 ```bash
+# Basic usage - traces your contract functions
+cargo stylus usertrace \
+  --tx=0x88b0ad9daa0b701d868a5f9a0132db7c0402178ba44ed8dec4ba76784c7194fd \
+  --endpoint=$RPC_URL
+```
+
+Output:
+```bash
+=== STYLUS FUNCTION CALL TREE ===
+└─ #1 stylus_hello_world::__stylus_struct_entrypoint::h09ecd85e5c55b994 (lib.rs:33)
+    input = size=4
+    <anon> = stylus_sdk::host::VM { 0=<unavailable> }
+  └─ #2 stylus_hello_world::Counter::increment::h5b9fb276c23de4f4 (lib.rs:64)
+      self = 0x000000016fdeaa78
+    └─ #3 stylus_hello_world::Counter::set_number::h5bd2c4836637ecb9 (lib.rs:49)
+        self = 0x000000016fdeaa78
+        new_number = ruint::Uint<256, 4> { limbs=unsigned long[4] { [0]=1, [1]=0, [2]=0, [3]=0 } }
+```
+
+#### Advanced Tracing Options
+
+```bash
+# Include SDK calls
+cargo stylus usertrace --tx <TX_HASH> --endpoint=$RPC_URL --verbose-usertrace
+
+# Trace specific external crates
+cargo stylus usertrace --tx <TX_HASH> --endpoint=$RPC_URL \
+  --trace-external-usertrace="std,core,other_contract"
+```
+
+### Interactive Debugging with `replay`
+
+Use StylusDB for interactive debugging sessions:
+
+```bash
+# Basic replay with stylusdb
+cargo stylus replay --debugger stylusdb --tx <TX_HASH> --endpoint=$RPC_URL
+```
+
+This will:
+1. Launch StylusDB
+2. Load your contract's debug symbols
+3. Stop at breakpoints you can set
+4. Allow stepping through code and inspecting variables with contract programming sugar (e.g. pretty-print `uint256` and other well-known types)
+
+#### Multi-Contract Debugging
+
+Debug transactions involving multiple contracts:
+
+```bash
+cargo stylus replay --debugger stylusdb --tx <TX_HASH> \
+  --contracts 0x123...:./contractA,0x456...:./contractB \
+  --endpoint=$RPC_URL
+```
+
+In the debugger:
+```bash
+(stylusdb) stylus-contract breakpoint 0x456... ContractB::some_function
+Set breakpoint on ContractB::some_function in contract 0x456... (ID: 1, 1 locations)
+(stylusdb) continue
+```
+
+#### Mixed Stylus/Solidity Debugging
+
+Debug transactions that call both Stylus and Solidity contracts:
+
+```bash
+cargo stylus replay --debugger stylusdb --tx <TX_HASH> \
+  --addr-solidity=0xda52b25ddb0e3b9cc393b0690ac62245ac772527 \
+  --endpoint=$RPC_URL
+```
+
+When execution reaches a Solidity contract:
+```bash
+(stylusdb)
+════════ Solidity Contract Call ════════
+Contract: 0xda52b25ddb0e3b9cc393b0690ac62245ac772527
+Function selector: 0xd09de08a (increment())
+NOTE: This is a Solidity contract - skipping to next contract
+```
+
+### Direct StylusDB Usage
+
+You can also use StylusDB directly without cargo-stylus:
+
+```bash
+# Start interactive debugger
 /usr/local/bin/stylusdb
-(stylusdb) target create ./my-program
+
+# Common commands
+(stylusdb) target create ./target/release/my_contract.so
+(stylusdb) breakpoint set --name user_entrypoint
 (stylusdb) run
+(stylusdb) continue
 (stylusdb) quit
-```
-
-### With cargo-stylus
-```bash
-/usr/local/bin/rust-stylusdb ./my-rust-program
-```
-
-### Pretty Print Traces
-```bash
-python3 -m venv myvenv
-source ./myvenv/bin/activate
-pip3 install colorama
-/usr/local/bin/pretty-print-trace /tmp/lldb_function_trace.json
 ```
 
 ## Troubleshooting

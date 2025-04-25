@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <cstddef>
 #include <iomanip>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -63,8 +64,9 @@ struct CallRecord {
 
 // Thread-local call stack to track hierarchy
 struct ThreadCallStack {
-  std::vector<size_t> stack;
+  std::vector<size_t> stack;  // Stack of call IDs currently active
   size_t next_call_id = 1; // Start with 1 (0 means no parent)
+  std::map<std::string, size_t> active_functions; // Map function base name to its call_id
 };
 
 static std::mutex g_trace_mutex;
@@ -384,13 +386,103 @@ static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
 }
 
 static std::string ExtractBaseName(const std::string &fn) {
-  auto last = fn.rfind("::");
-  if (last == std::string::npos)
-    return fn;
-  auto prev = fn.rfind("::", last - 1);
-  if (prev == std::string::npos)
-    return fn.substr(last + 2);
-  return fn.substr(prev + 2, last - prev - 2);
+  // Goal: Extract a meaningful identifier from Rust function names
+  // Examples:
+  //   crate::Module::Struct::method::h123abc -> Struct::method
+  //   crate::function::h123abc -> function
+  //   Struct::method::h123abc -> Struct::method
+  //   function::h123abc -> function
+  //   some::module::function -> function (if no hash)
+
+  // First, remove the hash suffix if it exists
+  std::string name = fn;
+  auto last_sep = name.rfind("::");
+  if (last_sep != std::string::npos && last_sep + 2 < name.length()) {
+    // Check if what follows :: looks like a hash (h followed by hex)
+    if (name[last_sep + 2] == 'h' && last_sep + 3 < name.length()) {
+      bool is_hash = true;
+      for (size_t i = last_sep + 3; i < name.length() && is_hash; i++) {
+        char c = name[i];
+        is_hash = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                  (c >= 'A' && c <= 'F');
+      }
+      if (is_hash) {
+        // Remove the hash suffix
+        name = name.substr(0, last_sep);
+      }
+    }
+  }
+
+  // Now extract the meaningful part
+  // Count how many :: separators we have
+  std::vector<size_t> separators;
+  size_t pos = 0;
+  while ((pos = name.find("::", pos)) != std::string::npos) {
+    separators.push_back(pos);
+    pos += 2;
+  }
+
+  if (separators.empty()) {
+    // No separators, return as is
+    return name;
+  }
+
+  // If we have exactly one separator, it might be Struct::method or
+  // module::function
+  if (separators.size() == 1) {
+    // Check what comes before the separator
+    std::string first_part = name.substr(0, separators[0]);
+    std::string second_part = name.substr(separators[0] + 2);
+
+    // If the first part looks like a crate/module name (contains underscore or
+    // all lowercase), just return the second part (the function name)
+    bool is_crate_or_module = false;
+    if (first_part.find('_') != std::string::npos) {
+      is_crate_or_module = true; // Crate names often have underscores
+    } else {
+      // Check if all lowercase (module) vs has uppercase (Type)
+      bool has_upper = false;
+      for (char c : first_part) {
+        if (c >= 'A' && c <= 'Z') {
+          has_upper = true;
+          break;
+        }
+      }
+      is_crate_or_module = !has_upper;
+    }
+
+    if (is_crate_or_module) {
+      // It's crate::function or module::function, return just the function
+      return second_part;
+    } else {
+      // It's Type::method, return both
+      return name;
+    }
+  }
+
+  // For multiple separators, we want the last two components (Type::method)
+  // unless the second-to-last looks like a module (lowercase)
+  if (separators.size() >= 2) {
+    size_t start = separators[separators.size() - 2] + 2;
+    std::string last_two = name.substr(start);
+
+    // Check if this looks like Type::method (Type starts with uppercase)
+    // or if it's module::function (module is lowercase)
+    size_t mid = last_two.find("::");
+    if (mid != std::string::npos && mid > 0) {
+      char first_char = last_two[0];
+      if (first_char >= 'A' && first_char <= 'Z') {
+        // Looks like Type::method, keep both parts
+        return last_two;
+      }
+    }
+
+    // Otherwise just return the last component
+    return name.substr(separators.back() + 2);
+  }
+
+  // Default: return last component after the last ::
+  return name.substr(separators.back() + 2);
 }
 
 // On each function-entry breakpoint, capture the current function and its args,
@@ -437,37 +529,184 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
   if (auto pos = fn.find("::"); pos != std::string::npos)
     crate_prefix = fn.substr(0, pos + 2);
 
-  // Scan down the real backtrace for first same-crate, different func
+  // Scan down the real backtrace to find the actual caller
+  // This might be in the same crate OR a different crate (cross-contract call)
   std::string caller_base;
+  std::string caller_full;
   size_t nframes = thread.GetNumFrames();
+
+  // Debug: Print the full call stack
+  if (getenv("DEBUG_TRACE")) {
+    fprintf(stderr, "[DEBUG] Processing: %s (base: %s)\n", fn.c_str(),
+            ExtractBaseName(fn).c_str());
+    fprintf(stderr, "[DEBUG] Full call stack (%zu frames):\n", nframes);
+    for (uint32_t i = 0; i < nframes && i < 10; ++i) {
+      auto f = thread.GetFrameAtIndex(i);
+      const char *cf = f.GetFunctionName();
+      if (cf) {
+        fprintf(stderr, "[DEBUG]   Frame %d: %s (base: %s)\n", i, cf,
+                ExtractBaseName(cf).c_str());
+      } else {
+        fprintf(stderr, "[DEBUG]   Frame %d: <unknown>\n", i);
+      }
+    }
+  }
+
   for (uint32_t i = 1; i < nframes; ++i) {
     auto f = thread.GetFrameAtIndex(i);
     const char *cf = f.GetFunctionName();
     if (!cf)
       continue;
     std::string s = cf;
-    // skip if not in our crate
-    if (!crate_prefix.empty() && s.rfind(crate_prefix, 0) != 0)
-      continue;
-    // skip if same function
+
+    // Skip if it's the same function (recursive call)
     if (s == fn)
       continue;
-    // bingo
+
+    // Check if this is a valid Rust function from our contracts
+    // (has :: separator and looks like a Rust function)
+    if (s.find("::") == std::string::npos)
+      continue;
+
+    // Skip system/runtime functions that aren't user code
+    if (s.find("std::") == 0 || s.find("core::") == 0 ||
+        s.find("alloc::") == 0 || s.find("__rust") != std::string::npos)
+      continue;
+
+    // Skip generated router functions - they're implementation details
+    // Look for the actual user function that called the router
+    if (s.find("as$u20$stylus_sdk..abi..Router") != std::string::npos ||
+        ExtractBaseName(s) == "route") {
+      if (getenv("DEBUG_TRACE")) {
+        fprintf(stderr, "[DEBUG] Skipping router function: %s\n", s.c_str());
+      }
+      continue; // Skip to find the real caller
+    }
+
+    // Found a potential caller - could be same crate or different
+    caller_full = s;
     caller_base = ExtractBaseName(s);
+
+    if (getenv("DEBUG_TRACE")) {
+      fprintf(stderr, "[DEBUG] Found caller: %s (base: %s)\n",
+              caller_full.c_str(), caller_base.c_str());
+    }
     break;
   }
 
-  // Find matching parent in our trace
+  // Determine parent ID
   size_t parent_id = 0;
+
+  // Extract the base name for this function
+  std::string fn_base = ExtractBaseName(fn);
+
+  // Check if this function is already being tracked (prevent duplicates)
+  auto existing_it = g_thread_call_stack.active_functions.find(fn_base);
+  if (existing_it != g_thread_call_stack.active_functions.end()) {
+    // This function was already added (probably as a parent for another
+    // function) Don't add it again, just update its info if needed
+    {
+      std::lock_guard<std::mutex> lk(g_trace_mutex);
+      for (auto &rec : g_trace_data) {
+        if (rec.call_id == existing_it->second) {
+          // Update with actual args and info since we now have them
+          if (rec.args.empty()) {
+            rec.args = std::move(args);
+          }
+          if (rec.file == "<unknown>") {
+            rec.file = file;
+            rec.line = line;
+          }
+          break;
+        }
+      }
+    }
+    return false; // Don't process this duplicate
+  }
+
+  // Generate call ID for this function
+  size_t call_id = g_thread_call_stack.next_call_id++;
+
+  // Find parent from active functions
   if (!caller_base.empty()) {
-    std::lock_guard<std::mutex> lk(g_trace_mutex);
-    for (auto it = g_trace_data.rbegin(); it != g_trace_data.rend(); ++it) {
-      if (ExtractBaseName(it->function) == caller_base) {
-        parent_id = it->call_id;
-        break;
+    // Check if the caller is already tracked as active
+    auto it = g_thread_call_stack.active_functions.find(caller_base);
+    if (it != g_thread_call_stack.active_functions.end()) {
+      parent_id = it->second;
+    } else {
+      // Caller not yet tracked - only add it if it's from our contract
+      // Check if it's actually a function we care about
+      if (!crate_prefix.empty() &&
+          caller_full.find(crate_prefix) != std::string::npos) {
+        // Add just this immediate caller, not the whole stack
+        CallRecord caller_rec;
+        caller_rec.function = caller_full;
+        caller_rec.file = "<unknown>";
+        caller_rec.line = 0;
+
+        // Don't assume the caller is root - check if IT has a parent too
+        size_t caller_parent_id = 0;
+        // Look for the caller's parent in the stack (frame i+1 from the caller)
+        for (uint32_t i = 2; i < nframes;
+             ++i) { // Start from 2 (skip current and direct caller)
+          auto f = thread.GetFrameAtIndex(i);
+          const char *cf = f.GetFunctionName();
+          if (!cf)
+            continue;
+
+          std::string s = cf;
+          if (s.find("::") == std::string::npos)
+            continue;
+          if (s.find("std::") == 0 || s.find("core::") == 0 ||
+              s.find("alloc::") == 0 || s.find("__rust") != std::string::npos)
+            continue;
+
+          // Check if this is from our crate
+          if (s.find(crate_prefix) != std::string::npos) {
+            std::string parent_base = ExtractBaseName(s);
+            auto parent_it =
+                g_thread_call_stack.active_functions.find(parent_base);
+            if (parent_it != g_thread_call_stack.active_functions.end()) {
+              caller_parent_id = parent_it->second;
+            }
+          }
+          break; // Only check immediate parent of the caller
+        }
+
+        caller_rec.parent_call_id = caller_parent_id;
+        caller_rec.call_id = g_thread_call_stack.next_call_id++;
+
+        // Try to get line info from the frame
+        for (uint32_t i = 1; i < nframes; ++i) {
+          auto f = thread.GetFrameAtIndex(i);
+          const char *cf = f.GetFunctionName();
+          if (cf && ExtractBaseName(cf) == caller_base) {
+            lldb::SBLineEntry le = f.GetLineEntry();
+            if (le.IsValid()) {
+              caller_rec.line = le.GetLine();
+              if (auto fs = le.GetFileSpec(); fs.IsValid())
+                caller_rec.file = fs.GetFilename();
+            }
+            break;
+          }
+        }
+
+        {
+          std::lock_guard<std::mutex> lk(g_trace_mutex);
+          g_trace_data.push_back(caller_rec);
+        }
+
+        g_thread_call_stack.active_functions[caller_base] = caller_rec.call_id;
+        parent_id = caller_rec.call_id;
+
+        // Regenerate call_id for current function since we used one
+        call_id = g_thread_call_stack.next_call_id++;
       }
     }
   }
+
+  // Track this function as active
+  g_thread_call_stack.active_functions[fn_base] = call_id;
 
   // Emit our record
   CallRecord rec;
@@ -475,7 +714,7 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
   rec.file = std::move(file);
   rec.line = line;
   rec.parent_call_id = parent_id;
-  rec.call_id = g_thread_call_stack.next_call_id++;
+  rec.call_id = call_id;
   rec.args = std::move(args);
 
   {
