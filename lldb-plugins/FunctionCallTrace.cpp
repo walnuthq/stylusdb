@@ -246,25 +246,48 @@ static bool ExtractBytesAsHex(lldb::SBValue &val, std::string &out_hex) {
 
 // Try to read a &[u8]
 static bool ExtractU8SliceAsHex(lldb::SBValue &val, std::string &out_hex) {
-  // 1) Make sure this is a Rust `[u8]` slice
   const char *cname = val.GetTypeName();
   if (!cname) return false;
   std::string type_name(cname);
-  // e.g. "&[u8]" or some full-path name containing "[u8]"
   if (type_name.find("[u8]") == std::string::npos)
     return false;
 
-  // 2) We expect each byte as a child element
   uint32_t len = val.GetNumChildren();
   if (len == 0)
     return false;
 
-  // 3) Hex-encode just like ExtractBytesAsHex
   std::ostringstream oss;
   oss << "0x" << std::hex << std::setfill('0');
   for (uint32_t i = 0; i < len; ++i) {
     lldb::SBValue byteVal = val.GetChildAtIndex(i);
     uint64_t b = byteVal.GetValueAsUnsigned(0) & 0xFF;
+    oss << std::setw(2) << (unsigned)b;
+  }
+
+  out_hex = oss.str();
+  return true;
+}
+
+// Try to read a Vec<u8> and return its contents as 0xFFAA33…
+static bool ExtractVecU8AsHex(lldb::SBValue &val, std::string &out_hex) {
+  const char *cname = val.GetTypeName();
+  if (!cname) return false;
+  std::string type_name(cname);
+
+  constexpr char Prefix[] =
+    "alloc::vec::Vec<unsigned char, alloc::alloc::Global>";
+  if (type_name.rfind(Prefix, 0) != 0)
+    return false;
+
+  uint32_t len = val.GetNumChildren();
+  if (len == 0)
+    return false;
+
+  std::ostringstream oss;
+  oss << "0x" << std::hex << std::setfill('0');
+  for (uint32_t i = 0; i < len; ++i) {
+    lldb::SBValue byteVal = val.GetChildAtIndex(i);
+    uint8_t b = byteVal.GetValueAsUnsigned(0) & 0xFF;
     oss << std::setw(2) << (unsigned)b;
   }
 
@@ -310,6 +333,12 @@ static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
     if (udata == "0")
       return "<unavailable>";
     return udata;
+  }
+  std::string uvec;
+  if (ExtractVecU8AsHex(val, uvec)) {
+    if (uvec == "0")
+      return "<unavailable>";
+    return uvec;
   }
 
   if (const char *raw_val = val.GetValue()) {
