@@ -144,32 +144,98 @@ static bool ExtractRuintAsDecimal(lldb::SBValue &val, std::string &out_dec) {
   return true;
 }
 
+/// Try to read a Signed<BITS,NLIMBS> and return its full signed decimal value.
+/// Falls back (returns false) if the shape isn’t what we expect.
+// Requires these includes at the top of your file:
+//   #include <llvm/ADT/APInt.h>
+//   #include <llvm/ADT/SmallString.h>
+
+static bool ExtractSintAsDecimal(lldb::SBValue &val, std::string &out_dec) {
+  // 1) Get the C-string type name
+  const char *cname = val.GetTypeName();
+  if (!cname)
+    return false; // not a Signed<…> at all
+
+  std::string type_name(cname);
+  constexpr char Prefix[] = "alloy_primitives::signed::int::Signed<";
+  if (type_name.rfind(Prefix, 0) != 0)
+    return false; // not the right template
+
+  // 2) If LLDB itself says “<unavailable>”, respect that immediately:
+  if (const char *summary = val.GetSummary()) {
+    if (std::strcmp(summary, "<unavailable>") == 0) {
+      out_dec = "<unavailable>";
+      return true;  // we recognized Signed<…>, so return true
+    }
+  }
+
+  // 3) Parse BITS and NLIMBS
+  auto lt    = type_name.find('<') + 1;
+  auto comma = type_name.find(',', lt);
+  auto gt    = type_name.find('>', comma);
+  int bits   = std::stoi(type_name.substr(lt,      comma - lt));
+  int limbsN = std::stoi(type_name.substr(comma+1, gt    - comma - 1));
+
+  // 4) Drill into the inner tuple "__0"
+  lldb::SBValue inner = val.GetChildMemberWithName("__0");
+  if (!inner.IsValid()) {
+    out_dec = "<unavailable>";
+    return true;
+  }
+
+  // 5) Fetch its "limbs" field
+  lldb::SBValue limbs = inner.GetChildMemberWithName("limbs");
+  if (!limbs.IsValid() || (int)limbs.GetNumChildren() != limbsN) {
+    out_dec = "<unavailable>";
+    return true;
+  }
+
+  // 6) Reconstruct into an APInt
+  llvm::APInt api(bits, 0);
+  for (int i = 0; i < limbsN; ++i) {
+    lldb::SBValue e = limbs.GetChildAtIndex(i);
+    uint64_t limb = e.GetValueAsUnsigned(0);
+    llvm::APInt part(64, limb);
+    api |= part.zext(bits).shl(static_cast<uint64_t>(64) * i);
+  }
+
+  // 7) Format as signed decimal
+  llvm::SmallString<128> buffer;
+  api.toString(buffer,
+               /*Radix=*/10,
+               /*Signed=*/true,
+               /*formatAsCLiteral=*/false,
+               /*UpperCase=*/false,
+               /*InsertSeparators=*/false);
+  out_dec = buffer.c_str();
+  return true;
+}
+
 // ----------------------------------------------------------------------------
 // Try to read a stylus_sdk::abi::bytes::Bytes and return “0x…” hex.
 static bool ExtractBytesAsHex(lldb::SBValue &val, std::string &out_hex) {
-  // 1) Grab the Rust type name
+  // Grab the Rust type name
   const char *cname = val.GetTypeName();
   if (!cname)
     return false;
   std::string type_name(cname);
 
-  // 2) Quick-check it’s the Bytes struct
+  // Quick-check it’s the Bytes struct
   constexpr char Prefix[] = "stylus_sdk::abi::bytes::Bytes";
   if (type_name.rfind(Prefix, 0) != 0)
     return false;
 
-  // 3) Drill into the single child (the size=N array)
+  // Drill into the single child (the size=N array)
   if (val.GetNumChildren() < 1)
     return false;
   lldb::SBValue array = val.GetChildAtIndex(0);
 
-  // 4) Pull out each byte and hex-encode
+  // Pull out each byte and hex-encode
   uint32_t len = array.GetNumChildren();
   std::ostringstream oss;
   oss << "0x" << std::hex << std::setfill('0');
   for (uint32_t i = 0; i < len; ++i) {
     lldb::SBValue byteVal = array.GetChildAtIndex(i);
-    // GetValueAsUnsigned(0) will give you the raw 0–255 for each element
     uint64_t b = byteVal.GetValueAsUnsigned(0) & 0xFF;
     oss << std::setw(2) << (unsigned)b;
   }
@@ -177,7 +243,6 @@ static bool ExtractBytesAsHex(lldb::SBValue &val, std::string &out_hex) {
   out_hex = oss.str();
   return true;
 }
-
 
 // -----------------------------------------------------------------------------
 // Helper: Recursively format an SBValue (structs, arrays, etc.) as a string.
@@ -189,15 +254,29 @@ static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
 
   // Try to decode special values related to Contracts.
   std::string hex;
-  if (ExtractFixedBytesAsHex(val, hex))
+  if (ExtractFixedBytesAsHex(val, hex)) {
+    if (hex == "0")
+      return "<unavailable>";
     return hex;
+  }
   std::string dec;
-  if (ExtractRuintAsDecimal(val, dec))
+  if (ExtractRuintAsDecimal(val, dec)) {
+    if (dec == "0")
+      return "<unavailable>";
     return dec;
-  // special-case Bytes
+  }
+  std::string sdec;
+  if (ExtractSintAsDecimal(val, sdec)) {
+    if (sdec == "0")
+      return "<unavailable>";
+    return sdec;
+  }
   std::string bhex;
-  if (ExtractBytesAsHex(val, bhex))
+  if (ExtractBytesAsHex(val, bhex)) {
+    if (bhex == "0")
+      return "<unavailable>";
     return bhex;
+  }
 
   if (const char *raw_val = val.GetValue()) {
     // Sometimes for complex types, raw_val = "<unavailable>" or nullptr
