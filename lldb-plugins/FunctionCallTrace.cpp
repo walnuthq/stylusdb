@@ -244,6 +244,34 @@ static bool ExtractBytesAsHex(lldb::SBValue &val, std::string &out_hex) {
   return true;
 }
 
+// Try to read a &[u8]
+static bool ExtractU8SliceAsHex(lldb::SBValue &val, std::string &out_hex) {
+  // 1) Make sure this is a Rust `[u8]` slice
+  const char *cname = val.GetTypeName();
+  if (!cname) return false;
+  std::string type_name(cname);
+  // e.g. "&[u8]" or some full-path name containing "[u8]"
+  if (type_name.find("[u8]") == std::string::npos)
+    return false;
+
+  // 2) We expect each byte as a child element
+  uint32_t len = val.GetNumChildren();
+  if (len == 0)
+    return false;
+
+  // 3) Hex-encode just like ExtractBytesAsHex
+  std::ostringstream oss;
+  oss << "0x" << std::hex << std::setfill('0');
+  for (uint32_t i = 0; i < len; ++i) {
+    lldb::SBValue byteVal = val.GetChildAtIndex(i);
+    uint64_t b = byteVal.GetValueAsUnsigned(0) & 0xFF;
+    oss << std::setw(2) << (unsigned)b;
+  }
+
+  out_hex = oss.str();
+  return true;
+}
+
 // -----------------------------------------------------------------------------
 // Helper: Recursively format an SBValue (structs, arrays, etc.) as a string.
 
@@ -276,6 +304,12 @@ static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
     if (bhex == "0")
       return "<unavailable>";
     return bhex;
+  }
+  std::string udata;
+  if (ExtractU8SliceAsHex(val, udata)) {
+    if (udata == "0")
+      return "<unavailable>";
+    return udata;
   }
 
   if (const char *raw_val = val.GetValue()) {
