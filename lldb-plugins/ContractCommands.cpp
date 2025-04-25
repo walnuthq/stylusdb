@@ -44,11 +44,11 @@ void PopContext() {
   }
 }
 
-// Command: "walnut-contract add <address> <library_path>"
+// Command: "stylus-contract add <address> <library_path>"
 bool WalnutContractAddCommand::DoExecute(lldb::SBDebugger debugger, char **command,
                                          lldb::SBCommandReturnObject &result) {
   if (!command || !command[0] || !command[1]) {
-    result.Printf("Usage: walnut-contract add <address> <library_path>\n");
+    result.Printf("Usage: stylus-contract add <address> <library_path>\n");
     result.SetStatus(lldb::eReturnStatusFailed);
     return false;
   }
@@ -82,11 +82,11 @@ bool WalnutContractAddCommand::DoExecute(lldb::SBDebugger debugger, char **comma
   return true;
 }
 
-// Command: "walnut-contract breakpoint <address> <function>"
+// Command: "stylus-contract breakpoint <address> <function>"
 bool WalnutContractBreakpointCommand::DoExecute(lldb::SBDebugger debugger, char **command,
                                                 lldb::SBCommandReturnObject &result) {
   if (!command || !command[0] || !command[1]) {
-    result.Printf("Usage: walnut-contract breakpoint <address> <function>\n");
+    result.Printf("Usage: stylus-contract breakpoint <address> <function>\n");
     result.SetStatus(lldb::eReturnStatusFailed);
     return false;
   }
@@ -96,7 +96,7 @@ bool WalnutContractBreakpointCommand::DoExecute(lldb::SBDebugger debugger, char 
 
   auto it = g_contract_registry.find(address);
   if (it == g_contract_registry.end()) {
-    result.Printf("Contract %s not found. Use 'walnut-contract add' first.\n", address.c_str());
+    result.Printf("Contract %s not found. Use 'stylus-contract add' first.\n", address.c_str());
     result.SetStatus(lldb::eReturnStatusFailed);
     return false;
   }
@@ -143,7 +143,7 @@ bool WalnutContractBreakpointCommand::DoExecute(lldb::SBDebugger debugger, char 
   return true;
 }
 
-// Command: "walnut-contract list"
+// Command: "stylus-contract list"
 bool WalnutContractListCommand::DoExecute(lldb::SBDebugger debugger, char **command,
                                           lldb::SBCommandReturnObject &result) {
   if (g_contract_registry.empty()) {
@@ -162,7 +162,7 @@ bool WalnutContractListCommand::DoExecute(lldb::SBDebugger debugger, char **comm
   return true;
 }
 
-// Command: "walnut-contract stack"
+// Command: "stylus-contract stack"
 bool WalnutContractStackCommand::DoExecute(lldb::SBDebugger debugger, char **command,
                                            lldb::SBCommandReturnObject &result) {
   if (g_call_stack.empty()) {
@@ -183,12 +183,12 @@ bool WalnutContractStackCommand::DoExecute(lldb::SBDebugger debugger, char **com
   return true;
 }
 
-// Command: "walnut-contract context <address>"
+// Command: "stylus-contract context <address>"
 bool WalnutContractContextCommand::DoExecute(lldb::SBDebugger debugger, char **command,
                                              lldb::SBCommandReturnObject &result) {
   if (!command || !command[0]) {
-    result.Printf("Usage: walnut-contract context <address>\n");
-    result.Printf("       walnut-contract context show\n");
+    result.Printf("Usage: stylus-contract context <address>\n");
+    result.Printf("       stylus-contract context show\n");
     result.SetStatus(lldb::eReturnStatusFailed);
     return false;
   }
@@ -209,7 +209,7 @@ bool WalnutContractContextCommand::DoExecute(lldb::SBDebugger debugger, char **c
   std::string address = arg;
   auto it = g_contract_registry.find(address);
   if (it == g_contract_registry.end()) {
-    result.Printf("Contract %s not found. Use 'walnut-contract add' first.\n", address.c_str());
+    result.Printf("Contract %s not found. Use 'stylus-contract add' first.\n", address.c_str());
     result.SetStatus(lldb::eReturnStatusFailed);
     return false;
   }
@@ -237,67 +237,67 @@ bool WalnutContractContextCommand::DoExecute(lldb::SBDebugger debugger, char **c
   return true;
 }
 
-// Register walnut-contract commands
+// Register stylus-contract commands
 bool RegisterWalnutContractCommands(lldb::SBCommandInterpreter &interpreter) {
-  // Create multiword command: "walnut-contract"
+  // Create multiword command: "stylus-contract"
   lldb::SBCommand contract_cmd = interpreter.AddMultiwordCommand(
-      "walnut-contract", "Multi-contract debugging commands for Stylus");
+      "stylus-contract", "Multi-contract debugging commands for Stylus");
   if (!contract_cmd.IsValid()) {
-    std::fprintf(stderr, "Failed to create multiword command 'walnut-contract'\n");
+    std::fprintf(stderr, "Failed to create multiword command 'stylus-contract'\n");
     return false;
   }
 
-  // Subcommand: "walnut-contract add"
+  // Subcommand: "stylus-contract add"
   {
     auto *add_iface = new WalnutContractAddCommand();
     lldb::SBCommand add_cmd = contract_cmd.AddCommand(
-        "add", add_iface, "Add a contract: walnut-contract add <address> <library_path>");
+        "add", add_iface, "Add a contract: stylus-contract add <address> <library_path>");
     if (!add_cmd.IsValid()) {
-      std::fprintf(stderr, "Failed to register 'walnut-contract add'\n");
+      std::fprintf(stderr, "Failed to register 'stylus-contract add'\n");
       return false;
     }
   }
 
-  // Subcommand: "walnut-contract breakpoint"
+  // Subcommand: "stylus-contract breakpoint"
   {
     auto *bp_iface = new WalnutContractBreakpointCommand();
     lldb::SBCommand bp_cmd = contract_cmd.AddCommand(
-        "breakpoint", bp_iface, "Set breakpoint: walnut-contract breakpoint <address> <function>");
+        "breakpoint", bp_iface, "Set breakpoint: stylus-contract breakpoint <address> <function>");
     if (!bp_cmd.IsValid()) {
-      std::fprintf(stderr, "Failed to register 'walnut-contract breakpoint'\n");
+      std::fprintf(stderr, "Failed to register 'stylus-contract breakpoint'\n");
       return false;
     }
   }
 
-  // Subcommand: "walnut-contract list"
+  // Subcommand: "stylus-contract list"
   {
     auto *list_iface = new WalnutContractListCommand();
     lldb::SBCommand list_cmd = contract_cmd.AddCommand(
-        "list", list_iface, "List all contracts: walnut-contract list");
+        "list", list_iface, "List all contracts: stylus-contract list");
     if (!list_cmd.IsValid()) {
-      std::fprintf(stderr, "Failed to register 'walnut-contract list'\n");
+      std::fprintf(stderr, "Failed to register 'stylus-contract list'\n");
       return false;
     }
   }
 
-  // Subcommand: "walnut-contract stack"
+  // Subcommand: "stylus-contract stack"
   {
     auto *stack_iface = new WalnutContractStackCommand();
     lldb::SBCommand stack_cmd = contract_cmd.AddCommand(
-        "stack", stack_iface, "Show call stack: walnut-contract stack");
+        "stack", stack_iface, "Show call stack: stylus-contract stack");
     if (!stack_cmd.IsValid()) {
-      std::fprintf(stderr, "Failed to register 'walnut-contract stack'\n");
+      std::fprintf(stderr, "Failed to register 'stylus-contract stack'\n");
       return false;
     }
   }
 
-  // Subcommand: "walnut-contract context"
+  // Subcommand: "stylus-contract context"
   {
     auto *context_iface = new WalnutContractContextCommand();
     lldb::SBCommand context_cmd = contract_cmd.AddCommand(
-        "context", context_iface, "Switch context: walnut-contract context <address>");
+        "context", context_iface, "Switch context: stylus-contract context <address>");
     if (!context_cmd.IsValid()) {
-      std::fprintf(stderr, "Failed to register 'walnut-contract context'\n");
+      std::fprintf(stderr, "Failed to register 'stylus-contract context'\n");
       return false;
     }
   }

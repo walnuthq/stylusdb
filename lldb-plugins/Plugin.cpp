@@ -65,6 +65,34 @@ PLUGIN_API bool PluginInitialize(lldb::SBDebugger debugger) {
                        "\"alloy_primitives::aliases::U64\"",
                        result);
 
+  // Add Address formatter using Python
+  interp.HandleCommand("script import lldb", result);
+  
+  // Define the Python formatter function properly
+  interp.HandleCommand("script def format_address(valobj, internal_dict):\n"
+                       "    try:\n"
+                       "        inner = valobj.GetChildAtIndex(0)\n"
+                       "        if not inner:\n"
+                       "            return '0x0000000000000000000000000000000000000000'\n"
+                       "        bytes_field = inner.GetChildAtIndex(0)\n"
+                       "        if not bytes_field:\n"
+                       "            return '0x0000000000000000000000000000000000000000'\n"
+                       "        error = lldb.SBError()\n"
+                       "        data = bytes_field.GetData()\n"
+                       "        if not data:\n"
+                       "            return '0x0000000000000000000000000000000000000000'\n"
+                       "        bytes_raw = data.ReadRawData(error, 0, 20)\n"
+                       "        if error.Fail() or not bytes_raw:\n"
+                       "            return '0x0000000000000000000000000000000000000000'\n"
+                       "        return '0x' + ''.join(format(b, '02x') for b in bytes_raw)\n"
+                       "    except:\n"
+                       "        return '0x0000000000000000000000000000000000000000'",
+                       result);
+  
+  interp.HandleCommand("type summary add -F format_address "
+                       "\"alloy_primitives::bits::address::Address\"",
+                       result);
+
   llvm::WithColor(llvm::outs(), llvm::HighlightColor::String)
       << "Walnut plugin loaded with contract type formatters.\n";
 

@@ -4,35 +4,35 @@
 #include <string>
 #include <map>
 
-// Command: "walnut-contract add <address> <library_path>"
+// Command: "stylus-contract add <address> <library_path>"
 class WalnutContractAddCommand : public lldb::SBCommandPluginInterface {
 public:
   bool DoExecute(lldb::SBDebugger debugger, char **command,
                  lldb::SBCommandReturnObject &result) override;
 };
 
-// Command: "walnut-contract breakpoint <address> <function>"
+// Command: "stylus-contract breakpoint <address> <function>"
 class WalnutContractBreakpointCommand : public lldb::SBCommandPluginInterface {
 public:
   bool DoExecute(lldb::SBDebugger debugger, char **command,
                  lldb::SBCommandReturnObject &result) override;
 };
 
-// Command: "walnut-contract list"
+// Command: "stylus-contract list"
 class WalnutContractListCommand : public lldb::SBCommandPluginInterface {
 public:
   bool DoExecute(lldb::SBDebugger debugger, char **command,
                  lldb::SBCommandReturnObject &result) override;
 };
 
-// Command: "walnut-contract stack"
+// Command: "stylus-contract stack"
 class WalnutContractStackCommand : public lldb::SBCommandPluginInterface {
 public:
   bool DoExecute(lldb::SBDebugger debugger, char **command,
                  lldb::SBCommandReturnObject &result) override;
 };
 
-// Command: "walnut-contract context <address>"
+// Command: "stylus-contract context <address>"
 class WalnutContractContextCommand : public lldb::SBCommandPluginInterface {
 public:
   bool DoExecute(lldb::SBDebugger debugger, char **command,
