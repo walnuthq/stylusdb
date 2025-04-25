@@ -144,6 +144,41 @@ static bool ExtractRuintAsDecimal(lldb::SBValue &val, std::string &out_dec) {
   return true;
 }
 
+// ----------------------------------------------------------------------------
+// Try to read a stylus_sdk::abi::bytes::Bytes and return “0x…” hex.
+static bool ExtractBytesAsHex(lldb::SBValue &val, std::string &out_hex) {
+  // 1) Grab the Rust type name
+  const char *cname = val.GetTypeName();
+  if (!cname)
+    return false;
+  std::string type_name(cname);
+
+  // 2) Quick-check it’s the Bytes struct
+  constexpr char Prefix[] = "stylus_sdk::abi::bytes::Bytes";
+  if (type_name.rfind(Prefix, 0) != 0)
+    return false;
+
+  // 3) Drill into the single child (the size=N array)
+  if (val.GetNumChildren() < 1)
+    return false;
+  lldb::SBValue array = val.GetChildAtIndex(0);
+
+  // 4) Pull out each byte and hex-encode
+  uint32_t len = array.GetNumChildren();
+  std::ostringstream oss;
+  oss << "0x" << std::hex << std::setfill('0');
+  for (uint32_t i = 0; i < len; ++i) {
+    lldb::SBValue byteVal = array.GetChildAtIndex(i);
+    // GetValueAsUnsigned(0) will give you the raw 0–255 for each element
+    uint64_t b = byteVal.GetValueAsUnsigned(0) & 0xFF;
+    oss << std::setw(2) << (unsigned)b;
+  }
+
+  out_hex = oss.str();
+  return true;
+}
+
+
 // -----------------------------------------------------------------------------
 // Helper: Recursively format an SBValue (structs, arrays, etc.) as a string.
 
@@ -159,6 +194,10 @@ static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
   std::string dec;
   if (ExtractRuintAsDecimal(val, dec))
     return dec;
+  // special-case Bytes
+  std::string bhex;
+  if (ExtractBytesAsHex(val, bhex))
+    return bhex;
 
   if (const char *raw_val = val.GetValue()) {
     // Sometimes for complex types, raw_val = "<unavailable>" or nullptr
