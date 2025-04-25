@@ -21,7 +21,33 @@ The script will:
 
 ### Option 2: Download Pre-built Binaries (Easiest)
 
-TODO: Add binaries into repo/releases.
+Download the latest installer from [GitHub Releases](https://github.com/walnuthq/stylusdb/releases):
+
+1. Download `StylusDB-0.1.0-macOS.pkg`
+2. Double-click the package to install
+3. Follow the installation wizard
+
+The package includes:
+- `stylusdb` - Main debugger
+- `rust-stylusdb` - Rust debugging wrapper
+- `pretty-print-trace` - Trace visualization tool
+- All required LLDB/LLVM libraries
+
+After installation, run `/usr/local/bin/stylusdb` to start using the debugger
+
+#### Install the package for all users (requires admin password)
+
+You can also install the package from the terminal:
+```bash
+# Download the package
+curl -L -O https://github.com/walnuthq/stylusdb/releases/download/v0.1.0/StylusDB-0.1.0-macOS.pkg
+
+# Install the package (requires admin password)
+sudo installer -pkg StylusDB-0.1.0-macOS.pkg -target /
+
+# Verify installation
+/usr/local/bin/stylusdb --version
+```
 
 ### Option 3: Manual Build
 
