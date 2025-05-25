@@ -37,6 +37,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstddef>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
@@ -70,6 +71,7 @@ static std::mutex g_trace_mutex;
 static std::vector<CallRecord> g_trace_data;
 // Use thread-specific storage for call stacks
 static thread_local ThreadCallStack g_thread_call_stack;
+static thread_local size_t g_base_depth = SIZE_MAX;
 
 // Decoding functions.
 
@@ -381,117 +383,107 @@ static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
   return "<unavailable>";
 }
 
+static std::string ExtractBaseName(const std::string &fn) {
+  auto last = fn.rfind("::");
+  if (last == std::string::npos)
+    return fn;
+  auto prev = fn.rfind("::", last - 1);
+  if (prev == std::string::npos)
+    return fn.substr(last + 2);
+  return fn.substr(prev + 2, last - prev - 2);
+}
+
+// On each function-entry breakpoint, capture the current function and its args,
+// then walk the real LLDB call stack to find the first frame in our crate
+// (skipping over ABI/router layers). Extract that caller’s base name and link
+// this call to the most recent matching record in g_trace_data. No hard-coded
+// names or return-breakpoints needed—purely driven by LLDB’s backtrace.
 static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
                                   lldb::SBThread &thread,
                                   lldb::SBBreakpointLocation &location) {
-  // Grab top-most stack frame
+  // Grab current frame
   lldb::SBFrame frame = thread.GetFrameAtIndex(0);
   if (!frame.IsValid())
-    return false; // continue
+    return false;
 
-  // Function name
-  const char *func_name = frame.GetFunctionName();
-  std::string fn = func_name ? func_name : "<unknown>";
+  // Extract our full function name
+  const char *cfn = frame.GetFunctionName();
+  std::string fn = cfn ? cfn : "<unknown>";
 
   // File & line
-  std::string file_name("<unknown>");
-  uint32_t line_no = 0;
-  {
-    lldb::SBLineEntry le = frame.GetLineEntry();
-    if (le.IsValid()) {
-      line_no = le.GetLine();
-      lldb::SBFileSpec fs = le.GetFileSpec();
-      if (fs.IsValid()) {
-        file_name = fs.GetFilename();
+  lldb::SBLineEntry le = frame.GetLineEntry();
+  std::string file = "<unknown>";
+  uint32_t line = 0;
+  if (le.IsValid()) {
+    line = le.GetLine();
+    if (auto fs = le.GetFileSpec(); fs.IsValid())
+      file = fs.GetFilename();
+  }
+
+  // Gather arguments
+  std::vector<std::pair<std::string, std::string>> args;
+  auto vars = frame.GetVariables(/*args=*/true, false, false, true);
+  for (uint32_t i = 0; i < vars.GetSize(); ++i) {
+    auto v = vars.GetValueAtIndex(i);
+    if (!v.IsValid())
+      continue;
+    const char *n = v.GetName();
+    std::string val = FormatValueRecursive(v);
+    args.emplace_back(n ? n : "<anon>", val.empty() ? "<unavailable>" : val);
+  }
+
+  // Compute our crate prefix (contract name)
+  std::string crate_prefix;
+  if (auto pos = fn.find("::"); pos != std::string::npos)
+    crate_prefix = fn.substr(0, pos + 2);
+
+  // Scan down the real backtrace for first same-crate, different func
+  std::string caller_base;
+  size_t nframes = thread.GetNumFrames();
+  for (uint32_t i = 1; i < nframes; ++i) {
+    auto f = thread.GetFrameAtIndex(i);
+    const char *cf = f.GetFunctionName();
+    if (!cf)
+      continue;
+    std::string s = cf;
+    // skip if not in our crate
+    if (!crate_prefix.empty() && s.rfind(crate_prefix, 0) != 0)
+      continue;
+    // skip if same function
+    if (s == fn)
+      continue;
+    // bingo
+    caller_base = ExtractBaseName(s);
+    break;
+  }
+
+  // Find matching parent in our trace
+  size_t parent_id = 0;
+  if (!caller_base.empty()) {
+    std::lock_guard<std::mutex> lk(g_trace_mutex);
+    for (auto it = g_trace_data.rbegin(); it != g_trace_data.rend(); ++it) {
+      if (ExtractBaseName(it->function) == caller_base) {
+        parent_id = it->call_id;
+        break;
       }
     }
   }
 
-  // Gather arguments: enhanced to handle struct/complex types
-  std::vector<std::pair<std::string, std::string>> arg_list;
-  {
-    lldb::SBValueList args = frame.GetVariables(/*arguments*/ true,
-                                                /*locals*/ false,
-                                                /*statics*/ false,
-                                                /*in_scope_only*/ true);
-
-    for (uint32_t i = 0; i < args.GetSize(); ++i) {
-      lldb::SBValue arg = args.GetValueAtIndex(i);
-      if (!arg.IsValid())
-        continue;
-
-      const char *name = arg.GetName();
-      std::string val_str = FormatValueRecursive(arg);
-
-      arg_list.push_back({
-          (name ? name : "<anon>"),
-          (val_str.empty() ? "<unavailable>" : val_str),
-      });
-    }
-  }
-
-  // Determine parent call ID
-  size_t parent_id = 0;
-  if (!g_thread_call_stack.stack.empty()) {
-    parent_id = g_thread_call_stack.stack.back();
-  }
-
-  // Create and store record
+  // Emit our record
   CallRecord rec;
   rec.function = std::move(fn);
-  rec.file = std::move(file_name);
-  rec.line = line_no;
-  rec.args = std::move(arg_list);
+  rec.file = std::move(file);
+  rec.line = line;
   rec.parent_call_id = parent_id;
   rec.call_id = g_thread_call_stack.next_call_id++;
+  rec.args = std::move(args);
 
-  // Push this call onto the thread's stack FIRST
-  g_thread_call_stack.stack.push_back(rec.call_id);
-
-  // Then store the record
   {
-    std::lock_guard<std::mutex> lock(g_trace_mutex);
+    std::lock_guard<std::mutex> lk(g_trace_mutex);
     g_trace_data.push_back(std::move(rec));
   }
 
-  // We need to set another breakpoint for when this function returns
-  // to properly track the call stack
-  lldb::SBFrame return_frame = thread.GetFrameAtIndex(1);
-  if (return_frame.IsValid()) {
-    // Get the return address properly
-    lldb::SBAddress return_address;
-    {
-      lldb::addr_t pc = return_frame.GetPC();
-      return_address =
-          return_frame.GetSymbolContext(lldb::eSymbolContextEverything)
-              .GetSymbol()
-              .GetStartAddress();
-      if (!return_address.IsValid()) {
-        // Fallback if symbol lookup fails
-        lldb::SBTarget target = process.GetTarget();
-        return_address = target.ResolveLoadAddress(pc);
-      }
-    }
-
-    if (return_address.IsValid()) {
-      lldb::SBTarget target = process.GetTarget();
-      lldb::SBBreakpoint return_bp = target.BreakpointCreateByAddress(
-          return_address.GetLoadAddress(target));
-      return_bp.SetOneShot(true);
-      return_bp.SetThreadID(thread.GetThreadID());
-      return_bp.SetCallback(
-          [](void *baton, lldb::SBProcess &proc, lldb::SBThread &thread,
-             lldb::SBBreakpointLocation &loc) {
-            // Pop the call stack when the function returns
-            if (!g_thread_call_stack.stack.empty()) {
-              g_thread_call_stack.stack.pop_back();
-            }
-            return false;
-          },
-          nullptr);
-    }
-  }
-
+  // No return breakpoints needed
   return false;
 }
 
