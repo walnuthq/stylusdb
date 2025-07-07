@@ -4,6 +4,7 @@
 
 #include "Driver.h"
 #include "lldb-plugins/FunctionCallTrace.h"
+#include "lldb-plugins/ContractCommands.h"
 
 #include "lldb/API/SBCommandInterpreter.h"
 #include "lldb/API/SBCommandInterpreterRunOptions.h"
@@ -464,6 +465,7 @@ int Driver::MainLoop() {
   result.PutOutput(m_debugger.GetOutputFile());
 
   RegisterWalnutCommands(sb_interpreter);
+  RegisterWalnutContractCommands(sb_interpreter);
   m_debugger.SetPrompt("(walnut-dbg) ");
 
   // We allow the user to specify an exit code when calling quit which we will

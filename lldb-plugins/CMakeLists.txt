@@ -1,5 +1,6 @@
 add_library(FunctionCallTrace STATIC
     FunctionCallTrace.cpp
+    ContractCommands.cpp
 )
 
 target_link_libraries(FunctionCallTrace PRIVATE ${llvm_libs} ${LLDB_LIBRARY})

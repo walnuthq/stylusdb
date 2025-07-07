@@ -30,7 +30,7 @@ namespace lldb {
 
 PLUGIN_API bool PluginInitialize(lldb::SBDebugger debugger) {
   lldb::SBCommandInterpreter interp = debugger.GetCommandInterpreter();
-  debugger.SetPrompt("(walnut-bug) ");
+  debugger.SetPrompt("(walnut-dbg) ");
 
   if (!RegisterWalnutCommands(interp)) {
     llvm::WithColor::error() << "Failed to register Walnut commands.\n";
