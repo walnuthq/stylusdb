@@ -676,6 +676,39 @@ bool CallTraceStopCommand::DoExecute(lldb::SBDebugger debugger, char **command,
 }
 
 // -----------------------------------------------------------------------------
+// Command "format-enable" - enables pretty printing for contract types
+bool FormatEnableCommand::DoExecute(lldb::SBDebugger debugger, char **command,
+                                    lldb::SBCommandReturnObject &result) {
+  lldb::SBCommandInterpreter ci = debugger.GetCommandInterpreter();
+
+  // First, use expression-based formatters for simple cases
+  // These work immediately without Python
+  ci.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                   "\"ruint::Uint<256, 4>\"",
+                   result);
+  ci.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                   "\"ruint::Uint<128, 2>\"",
+                   result);
+  ci.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                   "\"ruint::Uint<64, 1>\"",
+                   result);
+
+  result.Printf("Contract type formatters enabled:\n");
+  result.Printf(
+      "  - ruint::Uint<256, 4> → shows first limb (values up to 2^64)\n");
+  result.Printf("  - ruint::Uint<128, 2> → shows first limb\n");
+  result.Printf("  - ruint::Uint<64, 1> → shows value\n");
+  result.Printf("\nNote: For values larger than 2^64, only the lower 64 bits "
+                "are shown.\n");
+  result.Printf(
+      "To see the full value, use: expr (unsigned __int128)number.limbs[0] | "
+      "((unsigned __int128)number.limbs[1] << 64)\n");
+
+  result.SetStatus(lldb::eReturnStatusSuccessFinishResult);
+  return true;
+}
+
+// -----------------------------------------------------------------------------
 // Plugin entry point: register "calltrace" multiword command + subcommands.
 
 bool RegisterWalnutCommands(lldb::SBCommandInterpreter &interpreter) {
@@ -705,6 +738,17 @@ bool RegisterWalnutCommands(lldb::SBCommandInterpreter &interpreter) {
         "stop", stop_iface, "Stop tracing & print JSON (calltrace stop).");
     if (!stop_cmd.IsValid()) {
       std::fprintf(stderr, "Failed to register 'calltrace stop'\n");
+      return false;
+    }
+  }
+
+  // Add format-enable command
+  {
+    auto *format_iface = new FormatEnableCommand();
+    lldb::SBCommand format_cmd = interpreter.AddCommand(
+        "format-enable", format_iface, "Enable pretty printing for contract types");
+    if (!format_cmd.IsValid()) {
+      std::fprintf(stderr, "Failed to register 'format-enable'\n");
       return false;
     }
   }

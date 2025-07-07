@@ -14,4 +14,10 @@ public:
                  lldb::SBCommandReturnObject &result) override;
 };
 
+class FormatEnableCommand : public lldb::SBCommandPluginInterface {
+public:
+  bool DoExecute(lldb::SBDebugger debugger, char **command,
+                 lldb::SBCommandReturnObject &result) override;
+};
+
 bool RegisterWalnutCommands(lldb::SBCommandInterpreter &interpreter);

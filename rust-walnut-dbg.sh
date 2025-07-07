@@ -33,5 +33,10 @@ fi
 script_import="command script import \"$RUSTC_SYSROOT/lib/rustlib/etc/lldb_lookup.py\""
 commands_file="$RUSTC_SYSROOT/lib/rustlib/etc/lldb_commands"
 
+# Create a temporary file with all commands including format-enable
+temp_commands=$(mktemp)
+cat "$commands_file" > "$temp_commands"
+echo "format-enable" >> "$temp_commands"
+
 # Call LLDB with the commands added to the argument list
-exec "$lldb" --one-line-before-file "$script_import" --source-before-file "$commands_file" "$@"
+exec "$lldb" --one-line-before-file "$script_import" --source-before-file "$temp_commands" "$@"

@@ -37,8 +37,36 @@ PLUGIN_API bool PluginInitialize(lldb::SBDebugger debugger) {
     return false;
   }
 
+  // Auto-load formatters directly using the same commands as format-enable
+  lldb::SBCommandReturnObject result;
+  
+  // Add expression-based formatters that work immediately
+  interp.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                       "\"ruint::Uint<256, 4>\"",
+                       result);
+  interp.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                       "\"ruint::Uint<128, 2>\"",
+                       result);
+  interp.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                       "\"ruint::Uint<64, 1>\"",
+                       result);
+  interp.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                       "\"ruint::Uint<32, 1>\"",
+                       result);
+
+  // Also add for common type aliases
+  interp.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                       "\"alloy_primitives::aliases::U256\"",
+                       result);
+  interp.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                       "\"alloy_primitives::aliases::U128\"",
+                       result);
+  interp.HandleCommand("type summary add --summary-string \"${var.limbs[0]}\" "
+                       "\"alloy_primitives::aliases::U64\"",
+                       result);
+
   llvm::WithColor(llvm::outs(), llvm::HighlightColor::String)
-      << "Walnut plugin loaded successfully.\n";
+      << "Walnut plugin loaded with contract type formatters.\n";
 
   return true;
 }
