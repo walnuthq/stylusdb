@@ -55,11 +55,15 @@
 struct CallRecord {
   std::string function;
   std::string file;
+  std::string directory;  // Directory path for full file path
   uint32_t line;
   size_t call_id;        // Unique ID for this call
   size_t parent_call_id; // ID of parent call (0 for root)
   // For each argument: (name, value)
   std::vector<std::pair<std::string, std::string>> args;
+  // Error info (set if this call caused an error)
+  bool is_error = false;
+  std::string error_message;
 };
 
 // Thread-local call stack to track hierarchy
@@ -69,8 +73,24 @@ struct ThreadCallStack {
   std::map<std::string, size_t> active_functions; // Map function base name to its call_id
 };
 
+// Global flag to track if we hit a panic breakpoint
+static std::atomic<bool> g_panic_detected{false};
+
+// Forward declarations
+lldb::SBFrame FindUserFrame(lldb::SBThread &thread);
+
+// Execution status for JSON output
+struct ExecutionStatus {
+  bool is_error = false;
+  std::string error_message;
+  std::string error_function; 
+  std::string error_file;     
+  uint32_t error_line = 0;    
+};
+
 static std::mutex g_trace_mutex;
 static std::vector<CallRecord> g_trace_data;
+static ExecutionStatus g_execution_status;
 // Use thread-specific storage for call stacks
 static thread_local ThreadCallStack g_thread_call_stack;
 static thread_local size_t g_base_depth = SIZE_MAX;
@@ -523,6 +543,261 @@ static std::string ExtractBaseName(const std::string &fn) {
   return name.substr(separators.back() + 2);
 }
 
+// Helper: Read a source line from file and extract error message
+static std::string ReadSourceLine(const char *filepath, uint32_t line_num) {
+   if (!filepath || line_num == 0) return "";
+
+   FILE *src = std::fopen(filepath, "r");
+   if (!src) return "";
+
+   char line_buf[1024];
+   uint32_t current_line = 0;
+   std::string result;
+
+   while (std::fgets(line_buf, sizeof(line_buf), src)) {
+     current_line++;
+     if (current_line == line_num) {
+       result = line_buf;
+       // Trim whitespace
+       size_t start = result.find_first_not_of(" \t\n\r");
+       size_t end = result.find_last_not_of(" \t\n\r");
+       if (start != std::string::npos && end != std::string::npos) {
+         result = result.substr(start, end - start + 1);
+       }
+       break;
+     }
+   }
+   std::fclose(src);
+
+   return result;
+}
+
+// Helper: Extract panic message from panic_fmt or assert_failed frame arguments
+// The from_str function returns { ptr, ptr } where:
+//   - First ptr: points to the string data (the alloc_XXX static string)
+//   - Second ptr: metadata pointer (for slices this contains length info)
+// However, in practice for simple string panics, we often get:
+//   arg0 = pointer to string data
+//   arg1 = length or slice metadata
+//   arg2 = location pointer
+
+// TODO: Need to be main implementation, currently it does not works
+static std::string ExtractPanicMessage(lldb::SBThread &thread, lldb::SBProcess &process) {
+  lldb::SBFrame frame0 = thread.GetFrameAtIndex(0);
+  if (!frame0.IsValid()) return "";
+
+  const char *fn = frame0.GetFunctionName();
+  if (!fn) return "";
+  std::string func_name(fn);
+
+  // Get function arguments
+  lldb::SBValueList args = frame0.GetVariables(/*arguments=*/true, /*locals=*/false,
+                                               /*statics=*/false, /*in_scope_only=*/true);
+  
+  // Try interpreting first two args as (data_ptr, length) for &str
+  if (args.GetSize() >= 2) {
+    lldb::SBValue arg0 = args.GetValueAtIndex(0);
+    lldb::SBValue arg1 = args.GetValueAtIndex(1);
+    
+    if (arg0.IsValid() && arg1.IsValid()) {
+      uint64_t ptr = arg0.GetValueAsUnsigned(0);
+      uint64_t len = arg1.GetValueAsUnsigned(0);
+      
+      // Sanity check - len should be reasonable for a message (1-4096 chars)
+      if (ptr != 0 && len > 0 && len < 4096) {
+        std::vector<char> buf(len + 1, 0);
+        lldb::SBError err;
+        size_t read = process.ReadMemory(ptr, buf.data(), len, err);
+        
+        if (!err.Fail() && read == len) {
+          // Validate it looks like a string (printable ASCII/UTF-8)
+          bool valid = true;
+          for (size_t i = 0; i < len && valid; ++i) {
+            unsigned char c = buf[i];
+            // Allow printable ASCII, common control chars, and UTF-8 continuation bytes
+            valid = (c >= 0x20 && c < 0x7F) || c == '\n' || c == '\r' || c == '\t' || (c >= 0x80);
+          }
+          if (valid) {
+            std::string msg(buf.data(), len);
+            return msg;
+          }
+        }
+      }
+    }
+  }
+
+  // For fmt::Arguments structure - look for pieces field
+  for (uint32_t i = 0; i < args.GetSize(); ++i) {
+    lldb::SBValue arg = args.GetValueAtIndex(i);
+    if (!arg.IsValid()) continue;
+
+    const char *type_name = arg.GetTypeName();
+    if (!type_name) continue;
+    std::string type_str(type_name);
+    
+    if (type_str.find("fmt::Arguments") != std::string::npos) {
+      // Arguments has a 'pieces' field which contains the static string parts
+      lldb::SBValue pieces = arg.GetChildMemberWithName("pieces");
+      if (pieces.IsValid() && pieces.GetNumChildren() > 0) {
+        lldb::SBValue piece0 = pieces.GetChildAtIndex(0);
+        if (piece0.IsValid()) {
+          lldb::SBValue data_ptr = piece0.GetChildMemberWithName("data_ptr");
+          lldb::SBValue length = piece0.GetChildMemberWithName("length");
+          
+          if (!data_ptr.IsValid()) {
+            data_ptr = piece0.GetChildAtIndex(0);
+            length = piece0.GetChildAtIndex(1);
+          }
+          
+          if (data_ptr.IsValid() && length.IsValid()) {
+            uint64_t ptr = data_ptr.GetValueAsUnsigned(0);
+            uint64_t len = length.GetValueAsUnsigned(0);
+            
+            if (ptr != 0 && len > 0 && len < 4096) {
+              std::vector<char> buf(len + 1, 0);
+              lldb::SBError err;
+              size_t read = process.ReadMemory(ptr, buf.data(), len, err);
+              if (!err.Fail() && read == len) {
+                std::string msg(buf.data(), len);
+                return msg;
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Check for direct &str arguments
+    if (type_str.find("&str") != std::string::npos || 
+        type_str.find("str *") != std::string::npos) {
+      lldb::SBValue data_ptr = arg.GetChildAtIndex(0);
+      lldb::SBValue length = arg.GetChildAtIndex(1);
+      
+      if (data_ptr.IsValid() && length.IsValid()) {
+        uint64_t ptr = data_ptr.GetValueAsUnsigned(0);
+        uint64_t len = length.GetValueAsUnsigned(0);
+        
+        if (ptr != 0 && len > 0 && len < 4096) {
+          std::vector<char> buf(len + 1, 0);
+          lldb::SBError err;
+          size_t read = process.ReadMemory(ptr, buf.data(), len, err);
+          if (!err.Fail() && read == len) {
+            std::string msg(buf.data(), len);
+            return msg;
+          }
+        }
+      }
+    }
+  }
+
+  // Try to dereference first arg as pointer to { ptr, len } structure
+  // This handles cases where Arguments is passed by reference
+  if (args.GetSize() >= 1) {
+    lldb::SBValue arg0 = args.GetValueAtIndex(0);
+    if (arg0.IsValid()) {
+      uint64_t args_ptr = arg0.GetValueAsUnsigned(0);
+      
+      if (args_ptr != 0) {
+        // Read two pointers (for 32-bit Wasm: 2x4 bytes, for 64-bit: 2x8 bytes)
+        // Try 32-bit first (Wasm32)
+        uint32_t data[2] = {0, 0};
+        lldb::SBError err;
+        size_t read = process.ReadMemory(args_ptr, data, sizeof(data), err);
+        
+        if (!err.Fail() && read == sizeof(data)) {
+          uint64_t str_ptr = data[0];
+          uint64_t str_len = data[1];
+          
+          if (str_ptr != 0 && str_len > 0 && str_len < 4096) {
+            std::vector<char> buf(str_len + 1, 0);
+            read = process.ReadMemory(str_ptr, buf.data(), str_len, err);
+            if (!err.Fail() && read == str_len) {
+              bool valid = true;
+              for (size_t i = 0; i < str_len && valid; ++i) {
+                unsigned char c = buf[i];
+                valid = (c >= 0x20 && c < 0x7F) || c == '\n' || c == '\r' || c == '\t' || (c >= 0x80);
+              }
+              if (valid) {
+                std::string msg(buf.data(), str_len);
+                return msg;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return "";
+}
+
+// Callback for panic/assert breakpoints - stops execution and records error
+static bool PanicBreakpointCallback(void *baton, lldb::SBProcess &process,
+                                    lldb::SBThread &thread,
+                                    lldb::SBBreakpointLocation &location) {
+  // Only process the first panic hit
+  bool expected = false;
+  if (!g_panic_detected.compare_exchange_strong(expected, true)) {
+    return true; // Already detected, still stop
+  }
+
+  lldb::SBFrame user_frame = FindUserFrame(thread);
+
+  std::string panic_file;
+  std::string panic_func;
+  std::string full_path;
+  uint32_t panic_line = 0;
+
+  if (user_frame.IsValid()) {
+    const char *fn = user_frame.GetFunctionName();
+    if (fn) panic_func = fn;
+
+    lldb::SBLineEntry le = user_frame.GetLineEntry();
+    if (le.IsValid()) {
+      panic_line = le.GetLine();
+      lldb::SBFileSpec fs = le.GetFileSpec();
+      if (fs.IsValid()) {
+        const char *filename = fs.GetFilename();
+        const char *dir = fs.GetDirectory();
+        if (filename) panic_file = filename;
+        if (dir && filename) {
+          full_path = std::string(dir) + "/" + filename;
+        }
+      }
+    }
+  }
+
+  // Try to extract the actual panic message from frame arguments/memory
+  // THE FOLLWOING FUNCTION NEED TO BE FIXED
+  std::string panic_msg = ExtractPanicMessage(thread, process);
+  
+  // Fallback to source line if we couldn't extract the message
+  if (panic_msg.empty() && !full_path.empty() && panic_line > 0) {
+    std::string source_line = ReadSourceLine(full_path.c_str(), panic_line);
+    if (!source_line.empty()) {
+      // Try to extract just the message from assert! macro if present
+      // Pattern: assert!(condition, "message") -> extract "message"
+      size_t quote_start = source_line.find('"');
+      size_t quote_end = source_line.rfind('"');
+      if (quote_start != std::string::npos && quote_end != std::string::npos && quote_end > quote_start) {
+        panic_msg = source_line.substr(quote_start + 1, quote_end - quote_start - 1);
+      } else {
+        panic_msg = source_line;
+      }
+    }
+  }
+
+   // Update global execution status
+   std::lock_guard<std::mutex> lk(g_trace_mutex);
+   g_execution_status.is_error = true;
+   g_execution_status.error_message = panic_msg.empty() ? "Rust panic/assert" : panic_msg;
+   g_execution_status.error_file = panic_file;
+   g_execution_status.error_line = panic_line;
+   g_execution_status.error_function = panic_func;
+
+   return true; // Stop execution
+}
+
 // On each function-entry breakpoint, capture the current function and its args,
 // then walk the real LLDB call stack to find the first frame in our crate
 // (skipping over ABI/router layers). Extract that caller’s base name and link
@@ -543,11 +818,14 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
   // File & line
   lldb::SBLineEntry le = frame.GetLineEntry();
   std::string file = "<unknown>";
+  std::string directory;
   uint32_t line = 0;
   if (le.IsValid()) {
     line = le.GetLine();
-    if (auto fs = le.GetFileSpec(); fs.IsValid())
-      file = fs.GetFilename();
+    if (auto fs = le.GetFileSpec(); fs.IsValid()) {
+      if (fs.GetFilename()) file = fs.GetFilename();
+      if (fs.GetDirectory()) directory = fs.GetDirectory();
+    }
   }
 
   // Gather arguments
@@ -722,8 +1000,10 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
             lldb::SBLineEntry le = f.GetLineEntry();
             if (le.IsValid()) {
               caller_rec.line = le.GetLine();
-              if (auto fs = le.GetFileSpec(); fs.IsValid())
-                caller_rec.file = fs.GetFilename();
+              if (auto fs = le.GetFileSpec(); fs.IsValid()) {
+                if (fs.GetFilename()) caller_rec.file = fs.GetFilename();
+                if (fs.GetDirectory()) caller_rec.directory = fs.GetDirectory();
+              }
             }
             break;
           }
@@ -750,6 +1030,7 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
   CallRecord rec;
   rec.function = std::move(fn);
   rec.file = std::move(file);
+  rec.directory = std::move(directory);
   rec.line = line;
   rec.parent_call_id = parent_id;
   rec.call_id = call_id;
@@ -809,50 +1090,326 @@ static std::string JsonEscape(const std::string &s) {
   return oss.str();
 }
 
-// -----------------------------------------------------------------------------
-// Updated JSON printing to include call hierarchy
+// Helper: find first user frame
+lldb::SBFrame FindUserFrame(lldb::SBThread &thread) {
+    uint32_t n = thread.GetNumFrames();
 
-static void PrintJSON(lldb::SBCommandReturnObject &result) {
+    for (uint32_t i = 0; i < n; i++) {
+        lldb::SBFrame frame = thread.GetFrameAtIndex(i);
+        if (!frame.IsValid()) continue;
+
+        // Check function name - skip core/std/alloc functions
+        const char *fn = frame.GetFunctionName();
+        if (fn) {
+            std::string func(fn);
+            if (func.find("core::") == 0 ||
+                func.find("std::") == 0 ||
+                func.find("alloc::") == 0 ||
+                func.find("__rust") != std::string::npos) {
+                continue;
+            }
+        }
+
+        lldb::SBLineEntry line = frame.GetLineEntry();
+        if (!line.IsValid()) continue;
+
+        lldb::SBFileSpec fs = line.GetFileSpec();
+        if (!fs.IsValid()) continue;
+
+        const char *filename = fs.GetFilename();
+        const char *directory = fs.GetDirectory();
+
+        // Skip rust standard library files
+        std::string full_path;
+        if (directory) full_path = directory;
+        if (filename) {
+            if (!full_path.empty()) full_path += "/";
+            full_path += filename;
+        }
+
+        if (full_path.find("/rustc/") != std::string::npos ||
+            full_path.find("/library/core/") != std::string::npos ||
+            full_path.find("/library/std/") != std::string::npos ||
+            full_path.find("/library/alloc/") != std::string::npos) {
+            continue;
+        }
+
+        // Found a user frame
+        return frame;
+    }
+
+    return lldb::SBFrame();
+}
+
+
+// Detect Rust or C/C++ assert/panic
+bool IsAssertOrPanic(lldb::SBThread &thread, ExecutionStatus &status) {
+    uint32_t num_frames = thread.GetNumFrames();
+
+    for (uint32_t i = 0; i < num_frames; i++) {
+        lldb::SBFrame frame = thread.GetFrameAtIndex(i);
+        if (!frame.IsValid()) continue;
+
+        lldb::SBSymbolContext sc = frame.GetSymbolContext(lldb::eSymbolContextFunction);
+        lldb::SBFunction func = sc.GetFunction();
+
+        const char *name = nullptr;
+
+        if (func.IsValid()) {
+            name = func.GetName();
+        } else {
+            lldb::SBSymbol symbol = frame.GetSymbol();
+            if (symbol.IsValid()) {
+                name = symbol.GetName();
+            }
+        }
+
+        if (!name) continue;
+        std::string fn(name);
+
+        // Rust assert/panic
+        if (fn.find("core::panicking::assert_failed") != std::string::npos ||
+            fn.find("core::panicking::panic_fmt") != std::string::npos ||
+            fn.find("rust_begin_unwind") != std::string::npos) {
+
+            status.is_error = true;
+
+            // Use the last traced call as error location
+            {
+                std::lock_guard<std::mutex> lk(g_trace_mutex);
+                if (!g_trace_data.empty()) {
+                    const CallRecord &last_call = g_trace_data.back();
+                    status.error_file = last_call.file;
+                    status.error_line = last_call.line;
+                    status.error_function = last_call.function;
+
+                    // Read source line as error message
+                    if (!last_call.directory.empty() && !last_call.file.empty() && last_call.line > 0) {
+                        std::string full_path = last_call.directory + "/" + last_call.file;
+                        std::string source_line = ReadSourceLine(full_path.c_str(), last_call.line);
+                        if (!source_line.empty()) {
+                            status.error_message = source_line;
+                        }
+                    }
+
+                    if (status.error_message.empty()) {
+                        status.error_message = "Panic in " + ExtractBaseName(last_call.function);
+                    }
+                }
+            }
+
+            if (status.error_message.empty()) {
+                status.error_message = "Rust panic/assert detected";
+            }
+
+            return true;
+        }
+
+        // C/C++ assert (macOS) or Rust abort
+        if (fn.find("__assert_rtn") != std::string::npos ||
+            fn.find("__assert_fail") != std::string::npos ||
+            fn.find("abort") != std::string::npos ||
+            fn.find("__builtin_trap") != std::string::npos) {
+
+            status.is_error = true;
+
+            // Use the last traced call as error location (it's closest to where panic occurred)
+            {
+                std::lock_guard<std::mutex> lk(g_trace_mutex);
+                if (!g_trace_data.empty()) {
+                    const CallRecord &last_call = g_trace_data.back();
+                    status.error_file = last_call.file;
+                    status.error_line = last_call.line;
+                    status.error_function = last_call.function;
+
+                    // Read source line as error message
+                    if (!last_call.directory.empty() && !last_call.file.empty() && last_call.line > 0) {
+                        std::string full_path = last_call.directory + "/" + last_call.file;
+                        std::string source_line = ReadSourceLine(full_path.c_str(), last_call.line);
+                        if (!source_line.empty()) {
+                            status.error_message = source_line;
+                        }
+                    }
+
+                    if (status.error_message.empty()) {
+                        status.error_message = "Panic in " + ExtractBaseName(last_call.function);
+                    }
+                }
+            }
+
+            if (status.error_message.empty()) {
+                status.error_message = "Assert or abort detected";
+            }
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Main function: get execution status
+ExecutionStatus GetExecutionStatus(lldb::SBDebugger &debugger) {
+    // If we already detected a panic via breakpoint, use that status
+    if (g_panic_detected.load()) {
+        std::lock_guard<std::mutex> lk(g_trace_mutex);
+        return g_execution_status;
+    }
+    ExecutionStatus status;
+
+    lldb::SBTarget target = debugger.GetSelectedTarget();
+    if (!target.IsValid()) return status;
+
+    lldb::SBProcess process = target.GetProcess();
+    if (!process.IsValid()) return status;
+
+    lldb::StateType state = process.GetState();
+
+    // Process exited or crashed
+    if (state == lldb::eStateCrashed || state == lldb::eStateExited) {
+        int exit_status = process.GetExitStatus();
+        if (exit_status != 0) {
+            status.is_error = true;
+            status.error_message = "Process exited with status " + std::to_string(exit_status);
+        }
+    }
+
+    // Process stopped (maybe panic/assert)
+    if (state == lldb::eStateStopped) {
+        lldb::SBThread thread = process.GetSelectedThread();
+        if (thread.IsValid()) {
+            lldb::StopReason stop_reason = thread.GetStopReason();
+
+            if (stop_reason == lldb::eStopReasonSignal) {
+                uint64_t signal_num = thread.GetStopReasonDataAtIndex(0);
+                if (signal_num == 6) { // SIGABRT
+                    IsAssertOrPanic(thread, status);
+                } else {
+                    status.is_error = true;
+                    status.error_message = "Stopped by signal " + std::to_string(signal_num);
+                }
+            } else if (stop_reason == lldb::eStopReasonException) {
+                status.is_error = true;
+                status.error_message = "Exception occurred";
+            } else if (stop_reason == lldb::eStopReasonBreakpoint) {
+                IsAssertOrPanic(thread, status);
+            }
+        }
+    }
+
+    return status;
+}
+
+// -----------------------------------------------------------------------------
+// Updated JSON printing to include call hierarchy and status
+
+// Helper to check if a call record matches the error location
+static bool IsErrorCall(const CallRecord &r, const ExecutionStatus &exec_status) {
+  if (!exec_status.is_error) return false;
+
+  // Match by file and line if available
+  if (!exec_status.error_file.empty() && exec_status.error_line > 0) {
+    if (r.file == exec_status.error_file && r.line == exec_status.error_line) {
+      return true;
+    }
+  }
+
+  // Match by function name (partial match since function names may have hash suffixes)
+  if (!exec_status.error_function.empty()) {
+    if (r.function.find(exec_status.error_function) != std::string::npos ||
+        exec_status.error_function.find(r.function) != std::string::npos) {
+      return true;
+    }
+    // Also try matching the base function name (without module path)
+    size_t last_colon = r.function.rfind("::");
+    if (last_colon != std::string::npos) {
+      std::string base_name = r.function.substr(last_colon + 2);
+      // Remove hash suffix if present
+      size_t hash_pos = base_name.rfind("::h");
+      if (hash_pos != std::string::npos) {
+        base_name = base_name.substr(0, hash_pos);
+      }
+      if (exec_status.error_function.find(base_name) != std::string::npos) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+static void PrintJSON(lldb::SBCommandReturnObject &result, const ExecutionStatus &exec_status) {
   std::lock_guard<std::mutex> lock(g_trace_mutex);
 
-  result.Printf("[\n");
+  result.Printf("{\n");
+  result.Printf("  \"status\": \"%s\",\n", exec_status.is_error ? "error" : "success");
+  result.Printf("  \"calls\": [\n");
+
+  // Find which call is the error call (last matching call, since errors bubble up)
+  size_t error_call_idx = SIZE_MAX;
+  if (exec_status.is_error) {
+    for (size_t i = g_trace_data.size(); i > 0; --i) {
+      if (IsErrorCall(g_trace_data[i - 1], exec_status)) {
+        error_call_idx = i - 1;
+        break;
+      }
+    }
+    // If no match found, mark the last call as the error
+    if (error_call_idx == SIZE_MAX && !g_trace_data.empty()) {
+      error_call_idx = g_trace_data.size() - 1;
+    }
+  }
+
   for (size_t i = 0; i < g_trace_data.size(); ++i) {
     const auto &r = g_trace_data[i];
     std::string esc_func = JsonEscape(r.function);
     std::string esc_file = JsonEscape(r.file);
+    bool is_error_call = (i == error_call_idx);
 
-    result.Printf("  {\n");
-    result.Printf("    \"call_id\": %zu,\n", r.call_id);
-    result.Printf("    \"parent_call_id\": %zu,\n", r.parent_call_id);
-    result.Printf("    \"function\": \"%s\",\n", esc_func.c_str());
-    result.Printf("    \"file\": \"%s\",\n", esc_file.c_str());
-    result.Printf("    \"line\": %u,\n", r.line);
+    result.Printf("    {\n");
+    result.Printf("      \"call_id\": %zu,\n", r.call_id);
+    result.Printf("      \"parent_call_id\": %zu,\n", r.parent_call_id);
+    result.Printf("      \"function\": \"%s\",\n", esc_func.c_str());
+    result.Printf("      \"file\": \"%s\",\n", esc_file.c_str());
+    result.Printf("      \"line\": %u,\n", r.line);
 
-    result.Printf("    \"args\": [\n");
+    result.Printf("      \"args\": [\n");
     for (size_t j = 0; j < r.args.size(); ++j) {
       const auto &arg = r.args[j];
       std::string esc_name  = JsonEscape(arg.first);
       std::string esc_value = JsonEscape(arg.second);
 
-      result.Printf("      { \"name\": \"%s\", \"value\": \"%s\" }",
+      result.Printf("        { \"name\": \"%s\", \"value\": \"%s\" }",
                     esc_name.c_str(), esc_value.c_str());
       if (j + 1 < r.args.size())
         result.Printf(",");
       result.Printf("\n");
     }
-    result.Printf("    ]\n");
-    result.Printf("  }");
+    result.Printf("      ]");
+
+    // Add error info if this is the error call
+    if (is_error_call) {
+      result.Printf(",\n");
+      result.Printf("      \"error\": true,\n");
+      std::string esc_msg = JsonEscape(exec_status.error_message);
+      result.Printf("      \"error_message\": \"%s\"\n", esc_msg.c_str());
+    } else {
+      result.Printf("\n");
+    }
+
+    result.Printf("    }");
     if (i + 1 < g_trace_data.size())
       result.Printf(",");
     result.Printf("\n");
   }
-  result.Printf("]\n");
+  result.Printf("  ]\n");
+  result.Printf("}\n");
 }
 
 // -----------------------------------------------------------------------------
 // Helper: write same JSON to a file (e.g. /tmp/lldb_function_trace.json).
 
-static void WriteJSONToFile(const char *path) {
+static void WriteJSONToFile(const char *path, const ExecutionStatus &exec_status) {
   std::lock_guard<std::mutex> lock(g_trace_mutex);
 
   FILE *fp = std::fopen(path, "w");
@@ -860,39 +1417,70 @@ static void WriteJSONToFile(const char *path) {
     std::fprintf(stderr, "Failed to open %s for writing\n", path);
     return;
   }
-  std::fprintf(fp, "[\n");
+
+  std::fprintf(fp, "{\n");
+  std::fprintf(fp, "  \"status\": \"%s\",\n", exec_status.is_error ? "error" : "success");
+  std::fprintf(fp, "  \"calls\": [\n");
+
+  // Find which call is the error call (last matching call)
+  size_t error_call_idx = SIZE_MAX;
+  if (exec_status.is_error) {
+    for (size_t i = g_trace_data.size(); i > 0; --i) {
+      if (IsErrorCall(g_trace_data[i - 1], exec_status)) {
+        error_call_idx = i - 1;
+        break;
+      }
+    }
+    // If no match found, mark the last call as the error
+    if (error_call_idx == SIZE_MAX && !g_trace_data.empty()) {
+      error_call_idx = g_trace_data.size() - 1;
+    }
+  }
 
   for (size_t i = 0; i < g_trace_data.size(); ++i) {
     const auto &r = g_trace_data[i];
     std::string esc_func = JsonEscape(r.function);
     std::string esc_file = JsonEscape(r.file);
+    bool is_error_call = (i == error_call_idx);
 
-    std::fprintf(fp, "  {\n");
-    std::fprintf(fp, "    \"call_id\": %zu,\n", r.call_id);
-    std::fprintf(fp, "    \"parent_call_id\": %zu,\n", r.parent_call_id);
-    std::fprintf(fp, "    \"function\": \"%s\",\n", esc_func.c_str());
-    std::fprintf(fp, "    \"file\": \"%s\",\n", esc_file.c_str());
-    std::fprintf(fp, "    \"line\": %u,\n", r.line);
+    std::fprintf(fp, "    {\n");
+    std::fprintf(fp, "      \"call_id\": %zu,\n", r.call_id);
+    std::fprintf(fp, "      \"parent_call_id\": %zu,\n", r.parent_call_id);
+    std::fprintf(fp, "      \"function\": \"%s\",\n", esc_func.c_str());
+    std::fprintf(fp, "      \"file\": \"%s\",\n", esc_file.c_str());
+    std::fprintf(fp, "      \"line\": %u,\n", r.line);
 
-    std::fprintf(fp, "    \"args\": [\n");
+    std::fprintf(fp, "      \"args\": [\n");
     for (size_t j = 0; j < r.args.size(); ++j) {
       const auto &arg = r.args[j];
       std::string esc_name  = JsonEscape(arg.first);
       std::string esc_value = JsonEscape(arg.second);
 
-      std::fprintf(fp, "      { \"name\": \"%s\", \"value\": \"%s\" }",
+      std::fprintf(fp, "        { \"name\": \"%s\", \"value\": \"%s\" }",
                    esc_name.c_str(), esc_value.c_str());
       if (j + 1 < r.args.size())
         std::fprintf(fp, ",");
       std::fprintf(fp, "\n");
     }
-    std::fprintf(fp, "    ]\n");
-    std::fprintf(fp, "  }");
+    std::fprintf(fp, "      ]");
+
+    // Add error info if this is the error call
+    if (is_error_call) {
+      std::fprintf(fp, ",\n");
+      std::fprintf(fp, "      \"error\": true,\n");
+      std::string esc_msg = JsonEscape(exec_status.error_message);
+      std::fprintf(fp, "      \"error_message\": \"%s\"\n", esc_msg.c_str());
+    } else {
+      std::fprintf(fp, "\n");
+    }
+
+    std::fprintf(fp, "    }");
     if (i + 1 < g_trace_data.size())
       std::fprintf(fp, ",");
     std::fprintf(fp, "\n");
   }
-  std::fprintf(fp, "]\n");
+  std::fprintf(fp, "  ]\n");
+  std::fprintf(fp, "}\n");
   std::fclose(fp);
 }
 
@@ -900,6 +1488,14 @@ static void WriteJSONToFile(const char *path) {
 // Subcommand "calltrace start [regex]"
 bool CallTraceStartCommand::DoExecute(lldb::SBDebugger debugger, char **command,
                                       lldb::SBCommandReturnObject &result) {
+  // Clear previous trace data
+  {
+    std::lock_guard<std::mutex> lock(g_trace_mutex);
+    g_trace_data.clear();
+    g_execution_status = ExecutionStatus(); // Reset to success state
+  }
+  g_panic_detected.store(false);
+
   std::string regex = ".*"; // default
   if (command && command[0])
     regex = command[0];
@@ -940,12 +1536,15 @@ bool CallTraceStartCommand::DoExecute(lldb::SBDebugger debugger, char **command,
 // Subcommand "calltrace stop" – prints JSON & writes file
 bool CallTraceStopCommand::DoExecute(lldb::SBDebugger debugger, char **command,
                                      lldb::SBCommandReturnObject &result) {
+  // Get execution status (detect panics/crashes)
+  ExecutionStatus exec_status = GetExecutionStatus(debugger);
+
   result.Printf("\n--- LLDB Function Trace (JSON) ---\n");
-  PrintJSON(result);
+  PrintJSON(result, exec_status);
   result.Printf("----------------------------------\n");
 
   const char *out_path = "/tmp/lldb_function_trace.json";
-  WriteJSONToFile(out_path);
+  WriteJSONToFile(out_path, exec_status);
   result.Printf("Trace data written to: %s\n", out_path);
 
   result.SetStatus(lldb::eReturnStatusSuccessFinishResult);
