@@ -135,14 +135,23 @@ def print_call_node(call, tree, sol_function_map, level=0, is_last=False, prefix
     fl     = call.get("file","<no file>")
     ln     = call.get("line",0)
     args   = call.get("args", [])
+    is_error = call.get("error", False)
+
+    # Error marker and coloring
+    error_marker = f" {Fore.RED}✗ ERROR{Style.RESET_ALL}" if is_error else ""
+    fn_color = Fore.RED if is_error else Fore.YELLOW
 
     # Print the function call node
     print(
         f"{prefix}{pad}{branch}"
         f"{Fore.GREEN}#{call['call_id']}{Style.RESET_ALL} "
-        f"{Fore.YELLOW}{fn}{Style.RESET_ALL} "
-        f"({fl}:{ln})"
+        f"{fn_color}{fn}{Style.RESET_ALL} "
+        f"({fl}:{ln}){error_marker}"
     )
+
+    # Print error message if present
+    if is_error and call.get("error_message"):
+        print(f"{prefix}{pad}  {Fore.RED}↳ {call['error_message']}{Style.RESET_ALL}")
 
     # Print function arguments
     for arg in call.get("args", []):
@@ -230,7 +239,20 @@ def main():
         print(f"ERROR: No such file: {walnut_file}")
         sys.exit(1)
 
-    walnut = json.load(open(walnut_file))
+    walnut_json = json.load(open(walnut_file))
+    status = walnut_json.get("status", "success")
+    walnut = walnut_json.get("calls", [])
+
+    # Print error summary if status is error
+    if status == "error":
+        error_call = next((c for c in walnut if c.get("error")), None)
+        if error_call:
+            print(f"{Fore.RED}ERROR: Transaction reverted{Style.RESET_ALL}")
+            print(f"  Location: {error_call.get('file', '')}:{error_call.get('line', 0)}")
+            print(f"  Function: {Fore.RED}{error_call.get('function', 'unknown')}{Style.RESET_ALL}")
+            if error_call.get("error_message"):
+                print(f"  Message: {Fore.RED}{error_call['error_message']}{Style.RESET_ALL}")
+                
     sol_calls = []
     sol_function_map = {}
 
