@@ -52,6 +52,13 @@
 
 // -----------------------------------------------------------------------------
 
+// Argument info: name, type, value
+struct ArgInfo {
+  std::string name;
+  std::string type;
+  std::string value;
+};
+
 struct CallRecord {
   std::string function;
   std::string file;
@@ -59,8 +66,8 @@ struct CallRecord {
   uint32_t line;
   size_t call_id;        // Unique ID for this call
   size_t parent_call_id; // ID of parent call (0 for root)
-  // For each argument: (name, value)
-  std::vector<std::pair<std::string, std::string>> args;
+  // For each argument: name, type, value
+  std::vector<ArgInfo> args;
   // Error info (set if this call caused an error)
   bool is_error = false;
   std::string error_message;
@@ -234,6 +241,12 @@ static bool ExtractSintAsDecimal(lldb::SBValue &val, std::string &out_dec) {
 
   // 4) Drill into the inner tuple "__0"
   lldb::SBValue inner = val.GetChildMemberWithName("__0");
+
+  // Fallback: try GetChildAtIndex(0) if __0 doesn't work
+  if (!inner.IsValid() && val.GetNumChildren() > 0) {
+    inner = val.GetChildAtIndex(0);
+  }
+
   if (!inner.IsValid()) {
     out_dec = "<unavailable>";
     return true;
@@ -352,11 +365,43 @@ static bool ExtractVecU8AsHex(lldb::SBValue &val, std::string &out_hex) {
 }
 
 // -----------------------------------------------------------------------------
+// Helper: Check if type is a primitive integer and format as decimal
+static bool ExtractPrimitiveInt(lldb::SBValue &val, std::string &out) {
+  const char *cname = val.GetTypeName();
+  if (!cname) return false;
+  std::string type_name(cname);
+
+  // Handle unsigned types
+  if (type_name == "u8" || type_name == "u16" || type_name == "u32" ||
+      type_name == "u64" || type_name == "u128") {
+    uint64_t v = val.GetValueAsUnsigned(0);
+    out = std::to_string(v);
+    return true;
+  }
+
+  // Handle signed types
+  if (type_name == "i8" || type_name == "i16" || type_name == "i32" ||
+      type_name == "i64" || type_name == "i128") {
+    int64_t v = val.GetValueAsSigned(0);
+    out = std::to_string(v);
+    return true;
+  }
+
+  return false;
+}
+
+// -----------------------------------------------------------------------------
 // Helper: Recursively format an SBValue (structs, arrays, etc.) as a string.
 
 static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
   if (!val.IsValid()) {
     return "<invalid>";
+  }
+
+  // Try primitive integers first (u8, i32, etc.) - display as decimal
+  std::string prim_int;
+  if (ExtractPrimitiveInt(val, prim_int)) {
+    return prim_int;
   }
 
   // Try to decode special values related to Contracts.
@@ -421,9 +466,9 @@ static std::string FormatValueRecursive(lldb::SBValue &val, int depth = 0) {
   // If we have children, build a string from them
   uint32_t num_children = val.GetNumChildren();
   if (num_children > 0) {
-    // Collect child fields in JSON-ish format
+    // Collect child fields in JSON-ish format (without type name - shown separately)
     std::ostringstream oss;
-    oss << val.GetTypeName() << " { ";
+    oss << "{ ";
     for (uint32_t i = 0; i < num_children; ++i) {
       lldb::SBValue child = val.GetChildAtIndex(i);
       if (!child.IsValid()) continue;
@@ -829,15 +874,22 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
   }
 
   // Gather arguments
-  std::vector<std::pair<std::string, std::string>> args;
+  std::vector<ArgInfo> args;
   auto vars = frame.GetVariables(/*args=*/true, false, false, true);
   for (uint32_t i = 0; i < vars.GetSize(); ++i) {
     auto v = vars.GetValueAtIndex(i);
     if (!v.IsValid())
       continue;
     const char *n = v.GetName();
+    const char *typeName = v.GetTypeName();
+ 
     std::string val = FormatValueRecursive(v);
-    args.emplace_back(n ? n : "<anon>", val.empty() ? "<unavailable>" : val);
+
+    ArgInfo arg;
+    arg.name = n ? n : "<anon>";
+    arg.type = typeName ? typeName : "<unknown>";
+    arg.value = val.empty() ? "<unavailable>" : val;
+    args.push_back(std::move(arg));
   }
 
   // Compute our crate prefix (contract name)
@@ -1376,11 +1428,12 @@ static void PrintJSON(lldb::SBCommandReturnObject &result, const ExecutionStatus
     result.Printf("      \"args\": [\n");
     for (size_t j = 0; j < r.args.size(); ++j) {
       const auto &arg = r.args[j];
-      std::string esc_name  = JsonEscape(arg.first);
-      std::string esc_value = JsonEscape(arg.second);
+      std::string esc_name  = JsonEscape(arg.name);
+      std::string esc_type  = JsonEscape(arg.type);
+      std::string esc_value = JsonEscape(arg.value);
 
-      result.Printf("        { \"name\": \"%s\", \"value\": \"%s\" }",
-                    esc_name.c_str(), esc_value.c_str());
+      result.Printf("        { \"name\": \"%s\", \"type\": \"%s\", \"value\": \"%s\" }",
+                    esc_name.c_str(), esc_type.c_str(), esc_value.c_str());
       if (j + 1 < r.args.size())
         result.Printf(",");
       result.Printf("\n");
@@ -1453,11 +1506,12 @@ static void WriteJSONToFile(const char *path, const ExecutionStatus &exec_status
     std::fprintf(fp, "      \"args\": [\n");
     for (size_t j = 0; j < r.args.size(); ++j) {
       const auto &arg = r.args[j];
-      std::string esc_name  = JsonEscape(arg.first);
-      std::string esc_value = JsonEscape(arg.second);
+      std::string esc_name  = JsonEscape(arg.name);
+      std::string esc_type  = JsonEscape(arg.type);
+      std::string esc_value = JsonEscape(arg.value);
 
-      std::fprintf(fp, "        { \"name\": \"%s\", \"value\": \"%s\" }",
-                   esc_name.c_str(), esc_value.c_str());
+      std::fprintf(fp, "        { \"name\": \"%s\", \"type\": \"%s\", \"value\": \"%s\" }",
+                   esc_name.c_str(), esc_type.c_str(), esc_value.c_str());
       if (j + 1 < r.args.size())
         std::fprintf(fp, ",");
       std::fprintf(fp, "\n");
