@@ -77,7 +77,7 @@ struct CallRecord {
 struct ThreadCallStack {
   std::vector<size_t> stack;  // Stack of call IDs currently active
   size_t next_call_id = 1; // Start with 1 (0 means no parent)
-  std::map<std::string, size_t> active_functions; // Map function base name to its call_id
+  std::map<uint64_t, size_t> active_frames; // Map frame pointer to call_id
 };
 
 // Global flag to track if we hit a panic breakpoint
@@ -927,9 +927,8 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
       continue;
     std::string s = cf;
 
-    // Skip if it's the same function (recursive call)
-    if (s == fn)
-      continue;
+    // Note: Don't skip same function - for recursive calls, the caller IS
+    // the same function, and we want to track that relationship
 
     // Check if this is a valid Rust function from our contracts
     // (has :: separator and looks like a Rust function)
@@ -965,99 +964,62 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
   // Determine parent ID
   size_t parent_id = 0;
 
-  // Extract the base name for this function
-  std::string fn_base = ExtractBaseName(fn);
+  // Get current frame pointer (unique for each call)
+  uint64_t current_fp = frame.GetFP();
 
-  // Check if this function is already being tracked (prevent duplicates)
-  auto existing_it = g_thread_call_stack.active_functions.find(fn_base);
-  if (existing_it != g_thread_call_stack.active_functions.end()) {
-    // This function was already added (probably as a parent for another
-    // function) Don't add it again, just update its info if needed
-    {
-      std::lock_guard<std::mutex> lk(g_trace_mutex);
-      for (auto &rec : g_trace_data) {
-        if (rec.call_id == existing_it->second) {
-          // Update with actual args and info since we now have them
-          if (rec.args.empty()) {
-            rec.args = std::move(args);
-          }
-          if (rec.file == "<unknown>") {
-            rec.file = file;
-            rec.line = line;
-          }
-          break;
-        }
-      }
-    }
-    return false; // Don't process this duplicate
+  // Check if this exact frame is already tracked
+  auto existing_it = g_thread_call_stack.active_frames.find(current_fp);
+  if (existing_it != g_thread_call_stack.active_frames.end()) {
+    return false; // Already processed this exact frame
   }
 
   // Generate call ID for this function
   size_t call_id = g_thread_call_stack.next_call_id++;
 
-  // Find parent from active functions
-  if (!caller_base.empty()) {
-    // Check if the caller is already tracked as active
-    auto it = g_thread_call_stack.active_functions.find(caller_base);
-    if (it != g_thread_call_stack.active_functions.end()) {
-      parent_id = it->second;
-    } else {
-      // Caller not yet tracked - only add it if it's from our contract
-      // Check if it's actually a function we care about
-      if (!crate_prefix.empty() &&
-          caller_full.find(crate_prefix) != std::string::npos) {
-        // Add just this immediate caller, not the whole stack
+  // Find parent by looking up the caller's frame pointer
+  if (nframes > 1) {
+    // Find the caller frame (skip system frames)
+    for (uint32_t i = 1; i < nframes; ++i) {
+      auto caller_frame = thread.GetFrameAtIndex(i);
+      if (!caller_frame.IsValid()) continue;
+
+      const char *cf = caller_frame.GetFunctionName();
+      if (!cf) continue;
+
+      std::string s = cf;
+
+      // Skip system/runtime functions
+      if (s.find("::") == std::string::npos) continue;
+      if (s.find("std::") == 0 || s.find("core::") == 0 ||
+          s.find("alloc::") == 0 || s.find("__rust") != std::string::npos)
+        continue;
+
+      // Skip router functions
+      if (s.find("as$u20$stylus_sdk..abi..Router") != std::string::npos ||
+          ExtractBaseName(s) == "route")
+        continue;
+
+      // Found a valid caller - check if it's tracked
+      uint64_t caller_fp = caller_frame.GetFP();
+      auto it = g_thread_call_stack.active_frames.find(caller_fp);
+      if (it != g_thread_call_stack.active_frames.end()) {
+        parent_id = it->second;
+      } else if (!crate_prefix.empty() && s.find(crate_prefix) != std::string::npos) {
+        // Caller not yet tracked but is from our crate - add it
         CallRecord caller_rec;
-        caller_rec.function = caller_full;
+        caller_rec.function = s;
         caller_rec.file = "<unknown>";
         caller_rec.line = 0;
-
-        // Don't assume the caller is root - check if IT has a parent too
-        size_t caller_parent_id = 0;
-        // Look for the caller's parent in the stack (frame i+1 from the caller)
-        for (uint32_t i = 2; i < nframes;
-             ++i) { // Start from 2 (skip current and direct caller)
-          auto f = thread.GetFrameAtIndex(i);
-          const char *cf = f.GetFunctionName();
-          if (!cf)
-            continue;
-
-          std::string s = cf;
-          if (s.find("::") == std::string::npos)
-            continue;
-          if (s.find("std::") == 0 || s.find("core::") == 0 ||
-              s.find("alloc::") == 0 || s.find("__rust") != std::string::npos)
-            continue;
-
-          // Check if this is from our crate
-          if (s.find(crate_prefix) != std::string::npos) {
-            std::string parent_base = ExtractBaseName(s);
-            auto parent_it =
-                g_thread_call_stack.active_functions.find(parent_base);
-            if (parent_it != g_thread_call_stack.active_functions.end()) {
-              caller_parent_id = parent_it->second;
-            }
-          }
-          break; // Only check immediate parent of the caller
-        }
-
-        caller_rec.parent_call_id = caller_parent_id;
+        caller_rec.parent_call_id = 0; // Will be root or find its parent later
         caller_rec.call_id = g_thread_call_stack.next_call_id++;
 
-        // Try to get line info from the frame
-        for (uint32_t i = 1; i < nframes; ++i) {
-          auto f = thread.GetFrameAtIndex(i);
-          const char *cf = f.GetFunctionName();
-          if (cf && ExtractBaseName(cf) == caller_base) {
-            lldb::SBLineEntry le = f.GetLineEntry();
-            if (le.IsValid()) {
-              caller_rec.line = le.GetLine();
-              if (auto fs = le.GetFileSpec(); fs.IsValid()) {
-                if (fs.GetFilename()) caller_rec.file = fs.GetFilename();
-                if (fs.GetDirectory()) caller_rec.directory = fs.GetDirectory();
-              }
-            }
-            break;
+        // Try to get line info
+        lldb::SBLineEntry cle = caller_frame.GetLineEntry();
+        if (cle.IsValid()) {
+          caller_rec.line = cle.GetLine();
+          if (auto fs = cle.GetFileSpec(); fs.IsValid()) {
+            if (fs.GetFilename()) caller_rec.file = fs.GetFilename();
+            if (fs.GetDirectory()) caller_rec.directory = fs.GetDirectory();
           }
         }
 
@@ -1066,17 +1028,18 @@ static bool BreakpointHitCallback(void *baton, lldb::SBProcess &process,
           g_trace_data.push_back(caller_rec);
         }
 
-        g_thread_call_stack.active_functions[caller_base] = caller_rec.call_id;
+        g_thread_call_stack.active_frames[caller_fp] = caller_rec.call_id;
         parent_id = caller_rec.call_id;
 
         // Regenerate call_id for current function since we used one
         call_id = g_thread_call_stack.next_call_id++;
       }
+      break; // Found our caller
     }
   }
 
-  // Track this function as active
-  g_thread_call_stack.active_functions[fn_base] = call_id;
+  // Track this function as active using frame pointer
+  g_thread_call_stack.active_frames[current_fp] = call_id;
 
   // Emit our record
   CallRecord rec;
