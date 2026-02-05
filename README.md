@@ -78,8 +78,7 @@ brew install llvm@19 lit swig ninja cmake
 
 ##### Linux (Ubuntu/Debian)
 ```bash
-wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
-sudo apt-get install -y cmake ninja-build llvm-19-dev liblldb-19-dev lldb-19 swig
+sudo apt install -y build-essential cmake ninja-build llvm-19-dev liblldb-19-dev lldb-19 swig libzstd-dev
 ```
 
 #### Build Steps
@@ -115,9 +114,13 @@ sudo ninja && sudo ninja install
 cd /path/to/stylusdb
 mkdir build && cd build
 cmake -GNinja .. \
-  -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm \
-  -DLLVM_BUILD_ROOT=/usr/lib/llvm-19 \
-  -DLLVM_SRC=/usr/include/llvm-19 \
+   -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm \
+  -DLLVM_BUILD_ROOT=/usr/lib/llvm-19  \
+  -DLLVM_SRC=/usr/include/llvm-19  \
+  -DLLVM_TABLEGEN_EXE=/usr/lib/llvm-19/bin/llvm-tblgen \
+  -DLLVM_LIB_PATH=/usr/lib/llvm-19/lib/libLLVM-19.so  \
+  -DCMAKE_CXX_COMPILER=g++ \
+  -DCMAKE_C_COMPILER=gcc  \
   -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"
 sudo ninja && sudo ninja install
 ```
