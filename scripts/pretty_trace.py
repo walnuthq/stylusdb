@@ -153,9 +153,24 @@ def print_call_node(call, tree, sol_function_map, level=0, is_last=False, prefix
     if is_error and call.get("error_message"):
         print(f"{prefix}{pad}  {Fore.RED}↳ {call['error_message']}{Style.RESET_ALL}")
 
-    # Print function arguments
+    # Print function arguments with type info
     for arg in call.get("args", []):
-        print(f"{prefix}{pad}  {Fore.MAGENTA}{arg['name']}{Style.RESET_ALL} = {arg['value']}")
+        arg_name = arg.get('name', '<unknown>')
+        arg_type = arg.get('type', '')
+        arg_value = arg.get('value', '<unavailable>')
+
+        # Simplify common Rust type names for readability
+        if arg_type:
+            # Shorten common prefixes
+            short_type = arg_type.replace('alloy_primitives::bits::address::', '')
+            short_type = short_type.replace('alloy_primitives::signed::int::', '')
+            short_type = short_type.replace('alloy_primitives::bits::fixed::', '')
+            short_type = short_type.replace('ruint::', '')
+            short_type = short_type.replace('stylus_sdk::host::', '')
+            short_type = short_type.replace('alloc::vec::', '')
+            print(f"{prefix}{pad}  {Fore.MAGENTA}{arg_name}{Style.RESET_ALL}: {Fore.CYAN}{short_type}{Style.RESET_ALL} = {arg_value}")
+        else:
+            print(f"{prefix}{pad}  {Fore.MAGENTA}{arg_name}{Style.RESET_ALL} = {arg_value}")
 
     dfn = extract_function_name(fn)
 
