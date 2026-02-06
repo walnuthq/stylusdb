@@ -244,6 +244,12 @@ Install the development packages:
 sudo apt-get install liblldb-19-dev lldb-19
 ```
 
+### Linux: `lldb-server` not found at runtime
+StylusDB requires `lldb-server` to be available at a specific path. If you get errors about `lldb-server` not being found, create a symlink:
+```bash
+sudo ln -s /usr/lib/llvm-19/bin/lldb-server-19.1.7 /usr/local/bin/lldb-server-19.1.7
+```
+
 ## License
 
 See [LICENSE](LICENSE) file for details.
