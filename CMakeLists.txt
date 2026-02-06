@@ -18,6 +18,15 @@ find_library(LLDB_LIBRARY REQUIRED
     PATHS "${LLVM_BUILD_ROOT}/lib" /usr/lib/llvm-19/lib/
 )
 
+find_program(LLVM_TABLEGEN_EXE
+        NAMES llvm-tblgen
+        HINTS
+        /usr/lib/llvm-19/bin
+        /usr/lib/llvm-*/bin
+        /usr/local/bin
+        /opt/homebrew/opt/llvm@19/bin
+)
+
 include_directories(/usr/lib/llvm-19/include)
 include_directories(/opt/homebrew/opt/llvm@19/include)
 include_directories(${LLVM_INCLUDE_DIRS})
